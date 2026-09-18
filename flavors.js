@@ -1,0 +1,794 @@
+function flavorHub(){
+  if (window.__flavorHub__) {
+    window.__flavorHub__.togglePanel();
+    return;
+  }
+
+  var FONT_LINK_ID = '__flavor_font__';
+  function ensureFont(){
+    if (document.getElementById(FONT_LINK_ID)) return;
+    var l = document.createElement('link');
+    l.id = FONT_LINK_ID;
+    l.rel = 'stylesheet';
+    l.href = 'https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700&family=Quicksand:wght@500;600;700&display=swap';
+    document.head.appendChild(l);
+  }
+
+  var STORE_KEY = '__flavor_prefs_v1__';
+  function loadPrefs(){ try { return JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch(e){ return {}; } }
+  function savePrefs(p){ try { localStorage.setItem(STORE_KEY, JSON.stringify(p)); } catch(e){} }
+  var prefs = loadPrefs();
+
+  /* =========================================================
+     YouTube flavor — combines the purple/anime theme and the
+     TikTok-style immersive scroll into ONE flavor for the site,
+     each independently toggleable from the panel.
+     Selectors verified against real youtube.com DOM (both the
+     legacy ytd-* components and the newer yt-lockup-view-model
+     component system YouTube has migrated much of its UI to).
+     ========================================================= */
+  var YouTubeFlavor = {
+    id: 'fancy_yt',
+    label: 'fancy_yt',
+    match: function(){ return /(^|\.)youtube\.com$/.test(location.hostname); },
+
+    themeId: '__yt_theme_style__',
+    isThemeOn: function(){ return !!document.getElementById(this.themeId); },
+    applyTheme: function(){
+      if (this.isThemeOn()) return;
+      ensureFont();
+      var css =
+        "html,ytd-app{--yt-spec-base-background:#1c1230!important;--yt-spec-raised-background:#2a1b45!important;--yt-spec-general-background-a:#1c1230!important;--yt-spec-general-background-b:#241638!important;--yt-spec-text-primary:#f5e9ff!important;--yt-spec-text-secondary:#caa6f5!important;--yt-spec-brand-background-solid:#7b2ff7!important;--yt-spec-call-to-action:#c86dfc!important;--yt-spec-icon-active-other:#e6b8ff!important;}" +
+        "body,ytd-app,#page-manager{background:linear-gradient(160deg,#241638,#1c1230 60%) fixed!important;font-family:'Quicksand','Comic Sans MS',sans-serif!important;}" +
+        "ytd-masthead,#masthead-container{background:linear-gradient(100deg,#3a1c66,#7b2ff7)!important;box-shadow:0 2px 18px rgba(123,47,247,.45)!important;}" +
+        "#logo-icon,ytd-topbar-logo-renderer{filter:hue-rotate(200deg) saturate(1.6) drop-shadow(0 0 6px #d9a6ff)!important;}" +
+        "ytd-searchbox,#search-form,#container.ytd-searchbox{border-radius:999px!important;border:2px solid #c86dfc!important;background:#2a1b45!important;}" +
+        "a#video-title,#video-title,ytd-video-renderer #video-title,ytd-rich-grid-media #video-title," +
+        "h3.ytLockupMetadataViewModelHeadingReset,.ytLockupMetadataViewModelTitle{font-family:'Baloo 2','Comic Sans MS',cursive!important;color:#f5e9ff!important;font-weight:700!important;}" +
+        "ytd-thumbnail,yt-thumbnail-view-model{position:relative!important;border-radius:28px!important;overflow:hidden!important;border:3px solid #c86dfc!important;box-shadow:0 0 0 2px #1c1230,0 6px 20px rgba(123,47,247,.55)!important;transition:transform .18s ease!important;display:block!important;}" +
+        "ytd-thumbnail::after,yt-thumbnail-view-model::after{content:'\\1F338';position:absolute!important;top:6px!important;left:6px!important;font-size:18px!important;z-index:5!important;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))!important;pointer-events:none!important;}" +
+        "ytd-thumbnail:hover,yt-thumbnail-view-model:hover{transform:scale(1.035) rotate(-.4deg)!important;box-shadow:0 0 0 2px #1c1230,0 10px 28px rgba(200,109,252,.75)!important;}" +
+        "yt-lockup-metadata-view-model a[href^='/@']{color:#e6b8ff!important;}" +
+        "yt-chip-cloud-chip-renderer,tp-yt-paper-chip{background:#2a1b45!important;border:1px solid rgba(200,109,252,.35)!important;border-radius:999px!important;color:#f5e9ff!important;}" +
+        "ytd-guide-renderer,tp-yt-app-drawer,#guide-content{background:#1c1230!important;}" +
+        "ytd-guide-entry-renderer:hover,ytd-mini-guide-entry-renderer:hover{background:#2a1b45!important;border-radius:12px!important;}" +
+        ".ytp-progress-bar,.ytp-play-progress{background:linear-gradient(90deg,#c86dfc,#ff8fe0)!important;}" +
+        ".ytp-chrome-bottom{background:linear-gradient(0deg,rgba(28,18,48,.85),transparent)!important;}" +
+        "ytd-comments,#comments{background:#1c1230!important;color:#f5e9ff!important;}" +
+        "::-webkit-scrollbar{width:12px;}::-webkit-scrollbar-track{background:#1c1230;}::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#7b2ff7,#ff8fe0);border-radius:8px;border:2px solid #1c1230;}";
+      var style = document.createElement('style');
+      style.id = this.themeId;
+      style.textContent = css;
+      document.head.appendChild(style);
+    },
+    removeTheme: function(){
+      var s = document.getElementById(this.themeId);
+      if (s) s.remove();
+    },
+    toggleTheme: function(){
+      if (this.isThemeOn()) this.removeTheme(); else this.applyTheme();
+      prefs.ytTheme = this.isThemeOn();
+      savePrefs(prefs);
+    },
+
+    scrollMarkerId: '__yt_immersive__',
+    isScrollOn: function(){ return !!document.getElementById(this.scrollMarkerId); },
+    canScroll: function(){
+      return /\/watch/.test(location.pathname) && /[?&]v=/.test(location.search) && !!document.getElementById('movie_player');
+    },
+    exitScroll: function(){
+      var marker = document.getElementById(this.scrollMarkerId);
+      if (marker) marker.remove();
+      document.documentElement.classList.remove('__yt_immersive_active__');
+      var st = document.getElementById(this.scrollMarkerId + '_style');
+      if (st) st.remove();
+      if (document.fullscreenElement) {
+        (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
+      }
+      if (window.__ytImmersiveCleanup__) window.__ytImmersiveCleanup__();
+    },
+    enterScroll: function(){
+      var self = this;
+      if (self.isScrollOn()) { self.exitScroll(); return; }
+      if (!self.canScroll()) {
+        alert('Open a video first — click into any video so you\'re on its watch page — then try again.');
+        return;
+      }
+      var player = document.getElementById('movie_player');
+      ensureFont();
+
+      var style = document.createElement('style');
+      style.id = self.scrollMarkerId + '_style';
+      style.textContent =
+        'html.__yt_immersive_active__ ytd-masthead,' +
+        'html.__yt_immersive_active__ #secondary,' +
+        'html.__yt_immersive_active__ #comments,' +
+        'html.__yt_immersive_active__ #below,' +
+        'html.__yt_immersive_active__ ytd-watch-metadata,' +
+        'html.__yt_immersive_active__ #guide-content,' +
+        'html.__yt_immersive_active__ tp-yt-app-drawer,' +
+        'html.__yt_immersive_active__ ytd-mini-guide-renderer,' +
+        'html.__yt_immersive_active__ #chips-wrapper{display:none!important;}' +
+        'html.__yt_immersive_active__ body{overflow:hidden!important;background:#000!important;}';
+      document.head.appendChild(style);
+      document.documentElement.classList.add('__yt_immersive_active__');
+
+      var req = player.requestFullscreen || player.webkitRequestFullscreen;
+      if (req) req.call(player);
+
+      var marker = document.createElement('div');
+      marker.id = self.scrollMarkerId;
+      marker.dir = 'ltr';
+      player.appendChild(marker);
+
+      var closeBtn = document.createElement('button');
+      closeBtn.textContent = '✕';
+      closeBtn.style.cssText = 'position:absolute;top:16px;right:16px;z-index:2147483647;width:34px;height:34px;border-radius:50%;border:none;background:linear-gradient(100deg,#7b2ff7,#ff8fe0);color:#fff;font-size:16px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.35);';
+      closeBtn.onclick = function(){ self.exitScroll(); };
+      marker.appendChild(closeBtn);
+
+      var infoBox = document.createElement('div');
+      infoBox.style.cssText = 'position:absolute;left:14px;bottom:26px;right:60px;z-index:2147483647;color:#fff;font-family:Quicksand,sans-serif;text-shadow:0 1px 4px rgba(0,0,0,.7);pointer-events:none;text-align:left;';
+      marker.appendChild(infoBox);
+
+      var hint = document.createElement('div');
+      hint.textContent = 'scroll or swipe up for the next video';
+      hint.style.cssText = 'position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:2147483647;color:#fff;opacity:.75;font-family:Quicksand,sans-serif;font-size:11px;background:rgba(255,255,255,.15);padding:5px 12px;border-radius:999px;pointer-events:none;transition:opacity .5s;white-space:nowrap;';
+      marker.appendChild(hint);
+      setTimeout(function(){ hint.style.opacity = '0'; }, 3200);
+
+      function updateInfo(){
+        var t = document.querySelector('ytd-watch-metadata #title, h1.ytd-watch-metadata, #title h1');
+        var c = document.querySelector('ytd-watch-metadata #channel-name a, #channel-name a');
+        infoBox.replaceChildren();
+        if (c && c.textContent.trim()) {
+          var chanPill = document.createElement('div');
+          chanPill.textContent = c.textContent.trim();
+          chanPill.style.cssText = 'display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;background:linear-gradient(100deg,#7b2ff7,#ff8fe0);margin-bottom:6px;';
+          infoBox.appendChild(chanPill);
+        }
+        var titleDiv = document.createElement('div');
+        titleDiv.textContent = t ? t.textContent.trim() : document.title.replace(' - YouTube', '');
+        titleDiv.style.cssText = 'font-family:"Baloo 2",cursive;font-weight:700;font-size:15px;line-height:1.3;';
+        infoBox.appendChild(titleDiv);
+      }
+      updateInfo();
+
+      var navigating = false;
+      function next(){
+        if (navigating) return;
+        var link = document.querySelector('ytd-compact-autoplay-renderer a#thumbnail, ytd-watch-next-secondary-results-renderer a#thumbnail, #related a#thumbnail, #secondary a#thumbnail[href*="watch?v="], #secondary a[href*="watch?v="]');
+        if (!link) { hint.textContent = 'no next video found in the sidebar yet'; hint.style.opacity = '.75'; setTimeout(function(){ hint.style.opacity = '0'; }, 2000); return; }
+        navigating = true;
+        link.click();
+        setTimeout(function(){ navigating = false; }, 900);
+      }
+      function prev(){
+        if (navigating) return;
+        navigating = true;
+        history.back();
+        setTimeout(function(){ navigating = false; }, 900);
+      }
+
+      var wheelLock = false;
+      function onWheel(e){
+        if (wheelLock || Math.abs(e.deltaY) < 24) return;
+        wheelLock = true;
+        if (e.deltaY > 0) next(); else prev();
+        setTimeout(function(){ wheelLock = false; }, 700);
+      }
+      var touchStartY = null;
+      function onTouchStart(e){ touchStartY = e.touches[0].clientY; }
+      function onTouchEnd(e){
+        if (touchStartY == null) return;
+        var endY = e.changedTouches[0] ? e.changedTouches[0].clientY : touchStartY;
+        var dy = touchStartY - endY;
+        touchStartY = null;
+        if (Math.abs(dy) < 60) return;
+        if (dy > 0) next(); else prev();
+      }
+      function onKey(e){
+        if (e.key === 'Escape') self.exitScroll();
+        if (e.key === 'ArrowDown') next();
+        if (e.key === 'ArrowUp') prev();
+      }
+      function onNavFinish(){
+        setTimeout(function(){
+          updateInfo();
+          var p = document.getElementById('movie_player');
+          if (p && marker.parentElement !== p) p.appendChild(marker);
+          if (p && !document.fullscreenElement) {
+            var r = p.requestFullscreen || p.webkitRequestFullscreen;
+            if (r) r.call(p);
+          }
+        }, 300);
+      }
+
+      window.addEventListener('wheel', onWheel, { passive: true });
+      window.addEventListener('touchstart', onTouchStart, { passive: true });
+      window.addEventListener('touchend', onTouchEnd, { passive: true });
+      document.addEventListener('keydown', onKey);
+      document.addEventListener('yt-navigate-finish', onNavFinish);
+
+      window.__ytImmersiveCleanup__ = function(){
+        window.removeEventListener('wheel', onWheel);
+        window.removeEventListener('touchstart', onTouchStart);
+        window.removeEventListener('touchend', onTouchEnd);
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('yt-navigate-finish', onNavFinish);
+        window.__ytImmersiveCleanup__ = null;
+      };
+    },
+
+    canDoomScroll: function(){ return this.match(); },
+    doomScroll: function(){
+      var self = this;
+      if (self.isScrollOn()) { self.exitScroll(); return; }
+      if (self.canScroll()) { self.enterScroll(); return; }
+      var link = document.querySelector(
+        'a#thumbnail[href*="watch?v="], a.ytLockupViewModelContentImage[href*="watch?v="], ' +
+        'a#video-title[href*="watch?v="], a[href*="/watch?v="]'
+      );
+      if (!link) {
+        alert('No videos found on this page yet — scroll the feed a bit first, then try again.');
+        return;
+      }
+      var tries = 0;
+      function waitForPlayer(){
+        tries++;
+        if (self.canScroll()) { self.enterScroll(); return; }
+        if (tries < 40) setTimeout(waitForPlayer, 150);
+        else alert('Took too long to load a video — try again.');
+      }
+      link.click();
+      setTimeout(waitForPlayer, 300);
+    }
+  };
+
+  /* Future flavors: push another { id, label, match(), ... } object here.
+     See ~/.rpidrive/notes/bookmarklet-flavor-hub-howto.md for the workflow
+     and the two failure modes to check for before shipping a new one. */
+  var FLAVORS = [YouTubeFlavor];
+
+  function activeFlavor(){
+    for (var i = 0; i < FLAVORS.length; i++) if (FLAVORS[i].match()) return FLAVORS[i];
+    return null;
+  }
+
+  /* ================= mascot + panel ================= */
+  var mascotEl, panelEl, panelOpen = false, mascotHovering = false;
+  var PANEL_W = 288;
+  var searchQuery = '';
+  var panelView = 'main';
+  var MASCOT_REST = '-40px', MASCOT_OUT = '-4px', MASCOT_FULL = '8px';
+  var MASCOT_OPEN_SRC = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAeCAYAAABNChwpAAAB30lEQVR4nGNgGAUDDBhhDCkBjf/0tPjZhxtgu1mQBQ3UfOhi+YVbW+BsFmSJD19eYCh+8OwMnK0gZYIiToiPTR86YMHnUpAhT++dh/OllQzBhoHF63eAxWoWiDO0JLyEyDd6IOSx6CPogAdIrgYBZENgfJBhyGD+Q0OGFoYdOB2NSx9WB5ACQL7FxqYakBLQ+P//3ff/2GgYGx0jy2GjyXbEfyQL/v/6C8FYHICiDo1PsBzABtA1Pn11FVXBl18MuAB6nMPyPVlp4Cm6xcTogSZEXIkPBpiIMgibT/H4HptDcAEWXBIY8fblF4pvsBmMTx5kHq5owAqQExI8dSMB9BSPTx5fQmRhIBI8fX8dTEcbTwfTDkp5DAfuTSJanuw0IK1kCDccBJaezYSzQZYQI48PsDCQAGC+I1eerBCgNWDEJ/l/wdkFcE68UTy6L0FxDKto0NMACCzNM18ItyjBOIGiKJAW1ARbAotjEJ+w/FKC5jLikwRlHfR6HQZA4ienbIbzzXN8UeSv7d0DZ2s5u+AsihkJuRDdEfjAx/tvsYoLGMswkp0In324wUgoK8EAv6IwSZaDANFFIykhAQIgRxNT9DISbSJa/UCoLiC23GckxQHYHIIOSKpwGEYBAwMAXz55unC/YsAAAAAASUVORK5CYII=';
+  var MASCOT_BLINK_SRC = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAeCAYAAABNChwpAAABn0lEQVR4nGNgGAUDDBhhDCkBjf/0tPjZhxtgu1mQBQ3UfOhi+YVbW+BsFmSJD19eYCh+8OwMnK0gZYIiToiPTR86YMHnUpAhT++dh/OllQzBhoHF63eAxWoWiDO0JLyEyDd6IOSx6CPogAdIrgYBZENgfJBhyGD+Q0OGFoYdOB2NSx9WB5ACQL7FxqYakBLQ+P//3ff/2GgYGx0jy2GjyXbEfyQL/v/6C8FYHICiDo1PsBzABtA1Pn11FVXBl18MuAB6nMPyPVlp4Cm6xcTogSZEXIkPBpiIMgibT/H4HptDSHaAFHq8gSxExiQCXOmAiRLXEwvwmcPEMMCAaaAdwEKMInwpGV8xC5OnOASe4jAEJk5IHh9gxCf5f8HZBXCOn1Y8QdMYGBg+3n8LZ/NffrkQblGCcQLN08BHJMuJBYyE8i6+YDw5ZTOcbZ7ji9MBWs4uOItiRkIuJOQIZIDLAQLGMjjtYSJkKMjlhMpzGOBXFCbJchAgGALkhAQIgByNK9jJcgB6eY7NMcghRYzlIECSA2AAXwODWItHAQMUAACx9iWUYkuI3wAAAABJRU5ErkJggg==';
+
+  function bounceMascot(){
+    if (!mascotEl) return;
+    mascotEl.classList.add('__flavor_bounce__');
+    setTimeout(function(){ mascotEl.classList.remove('__flavor_bounce__'); }, 500);
+  }
+
+  function buildToggleRow(labelText, on, onClick){
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid #3a2a5c;';
+    var label = document.createElement('span');
+    label.textContent = labelText;
+    label.style.cssText = 'font-size:13px;font-weight:600;';
+    var sw = document.createElement('button');
+    sw.style.cssText = 'width:40px;height:22px;border-radius:999px;border:none;cursor:pointer;position:relative;flex-shrink:0;background:' + (on ? 'linear-gradient(100deg,#7b2ff7,#ff8fe0)' : '#3a2a5c') + ';transition:background .2s;';
+    var knob = document.createElement('span');
+    knob.style.cssText = 'position:absolute;top:2px;left:' + (on ? '20px' : '2px') + ';width:18px;height:18px;border-radius:50%;background:#fff;transition:left .2s;';
+    sw.appendChild(knob);
+    sw.onclick = onClick;
+    row.appendChild(label);
+    row.appendChild(sw);
+    return row;
+  }
+
+  function matchesSearch(label){
+    if (!searchQuery) return true;
+    return label.toLowerCase().indexOf(searchQuery.toLowerCase()) !== -1;
+  }
+
+  function buildSearchInput(){
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:10px;';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'Search flavors...';
+    input.value = searchQuery;
+    input.id = '__flavor_search_input__';
+    input.style.cssText = 'width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid #3a2a5c;background:#2a1b45;color:#f5e9ff;font-family:Quicksand,sans-serif;font-size:12px;outline:none;';
+    input.oninput = function(){
+      searchQuery = input.value;
+      var caret = input.selectionStart;
+      renderPanel();
+      var el = document.getElementById('__flavor_search_input__');
+      if (el) {
+        el.focus();
+        try { el.setSelectionRange(caret, caret); } catch(e){}
+      }
+    };
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  function smallBtn(text, onClick){
+    var b = document.createElement('button');
+    b.textContent = text;
+    b.style.cssText = 'flex:1;padding:7px 4px;border-radius:8px;border:1px solid #3a2a5c;background:#2a1b45;color:#f5e9ff;font-family:Quicksand,sans-serif;font-size:11px;font-weight:700;cursor:pointer;';
+    b.onclick = onClick;
+    return b;
+  }
+
+  function labeledInput(labelText, placeholder){
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:8px;';
+    var label = document.createElement('div');
+    label.textContent = labelText;
+    label.style.cssText = 'font-size:11px;color:#caa6f5;margin-bottom:4px;';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = placeholder;
+    input.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 9px;border-radius:8px;border:1px solid #3a2a5c;background:#2a1b45;color:#f5e9ff;font-family:Quicksand,sans-serif;font-size:12px;outline:none;';
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    return { wrap: wrap, input: input };
+  }
+
+  function allCustomFlavors(){ return prefs.customFlavors || []; }
+  function customFlavorsForSite(){
+    return allCustomFlavors().filter(function(f){ return !f.site || location.hostname.indexOf(f.site) !== -1; });
+  }
+  function saveCustomFlavors(list){ prefs.customFlavors = list; savePrefs(prefs); }
+
+  function runCustomFlavor(cf){
+    try {
+      (new Function(cf.code))();
+    } catch(e) {
+      alert('Error running "' + cf.name + '": ' + e.message);
+      return;
+    }
+    cf.on = !cf.on;
+    saveCustomFlavors(allCustomFlavors());
+    renderPanel();
+  }
+
+  function deleteCustomFlavor(id){
+    saveCustomFlavors(allCustomFlavors().filter(function(f){ return f.id !== id; }));
+    renderPanel();
+  }
+
+  function buildCustomToggleRow(cf){
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid #3a2a5c;gap:8px;';
+    var label = document.createElement('span');
+    label.textContent = cf.name;
+    label.style.cssText = 'font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
+    var controls = document.createElement('div');
+    controls.style.cssText = 'display:flex;align-items:center;gap:6px;flex-shrink:0;';
+    var sw = document.createElement('button');
+    sw.style.cssText = 'width:40px;height:22px;border-radius:999px;border:none;cursor:pointer;position:relative;flex-shrink:0;background:' + (cf.on ? 'linear-gradient(100deg,#7b2ff7,#ff8fe0)' : '#3a2a5c') + ';transition:background .2s;';
+    var knob = document.createElement('span');
+    knob.style.cssText = 'position:absolute;top:2px;left:' + (cf.on ? '20px' : '2px') + ';width:18px;height:18px;border-radius:50%;background:#fff;transition:left .2s;';
+    sw.appendChild(knob);
+    sw.onclick = function(){ runCustomFlavor(cf); };
+    var del = document.createElement('button');
+    del.textContent = '✕';
+    del.title = 'Delete';
+    del.style.cssText = 'width:20px;height:20px;border-radius:50%;border:none;background:#2a1b45;color:#caa6f5;font-size:10px;cursor:pointer;line-height:1;flex-shrink:0;';
+    del.onclick = function(){ deleteCustomFlavor(cf.id); };
+    controls.appendChild(sw);
+    controls.appendChild(del);
+    row.appendChild(label);
+    row.appendChild(controls);
+    return row;
+  }
+
+  function fallbackCopy(text, done){
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      ta.remove();
+      done(ok);
+    } catch(e) { done(false); }
+  }
+
+  function doExport(btn){
+    var json = JSON.stringify(allCustomFlavors(), null, 2);
+    var orig = btn.textContent;
+    function done(ok){
+      btn.textContent = ok ? 'Copied!' : 'Copy failed';
+      setTimeout(function(){ btn.textContent = orig; }, 1400);
+    }
+    try {
+      navigator.clipboard.writeText(json).then(function(){ done(true); }, function(){ fallbackCopy(json, done); });
+    } catch(e) {
+      fallbackCopy(json, done);
+    }
+  }
+
+  function buildToolbarRow(){
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;margin-top:12px;padding-top:10px;border-top:1px solid #3a2a5c;';
+    var addBtn = smallBtn('+ Add', function(){ panelView = 'add'; renderPanel(); });
+    var exportBtn = smallBtn('Export', function(){ doExport(exportBtn); });
+    var importBtn = smallBtn('Import', function(){ panelView = 'import'; renderPanel(); });
+    row.appendChild(addBtn);
+    row.appendChild(exportBtn);
+    row.appendChild(importBtn);
+    return row;
+  }
+
+  function renderAddView(){
+    panelEl.replaceChildren();
+    var title = document.createElement('div');
+    title.textContent = '+ Add flavor';
+    title.style.cssText = 'font-family:"Baloo 2",cursive;font-weight:700;font-size:16px;margin-bottom:10px;color:#f5e9ff;';
+    panelEl.appendChild(title);
+
+    var nameField = labeledInput('Name', 'e.g. Dark mode toggle');
+    var siteField = labeledInput('Site (optional)', 'leave blank for any site');
+    var codeLabel = document.createElement('div');
+    codeLabel.textContent = 'Code (self-toggling JS)';
+    codeLabel.style.cssText = 'font-size:11px;color:#caa6f5;margin:0 0 4px;';
+    var codeArea = document.createElement('textarea');
+    codeArea.placeholder = 'paste a self-toggling script...';
+    codeArea.style.cssText = 'width:100%;box-sizing:border-box;min-height:90px;padding:8px;border-radius:8px;border:1px solid #3a2a5c;background:#2a1b45;color:#f5e9ff;font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical;';
+
+    panelEl.appendChild(nameField.wrap);
+    panelEl.appendChild(siteField.wrap);
+    panelEl.appendChild(codeLabel);
+    panelEl.appendChild(codeArea);
+
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:6px;margin-top:10px;';
+    var saveBtn = smallBtn('Save', function(){
+      var name = nameField.input.value.trim();
+      var code = codeArea.value.trim();
+      if (!name || !code) { alert('Name and code are both required.'); return; }
+      var list = allCustomFlavors();
+      list.push({
+        id: 'cf_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+        name: name,
+        site: siteField.input.value.trim(),
+        code: code,
+        on: false
+      });
+      saveCustomFlavors(list);
+      panelView = 'main';
+      renderPanel();
+    });
+    saveBtn.style.background = 'linear-gradient(100deg,#7b2ff7,#ff8fe0)';
+    saveBtn.style.border = 'none';
+    saveBtn.style.color = '#fff';
+    var cancelBtn = smallBtn('Cancel', function(){ panelView = 'main'; renderPanel(); });
+    btnRow.appendChild(saveBtn);
+    btnRow.appendChild(cancelBtn);
+    panelEl.appendChild(btnRow);
+  }
+
+  function renderImportView(){
+    panelEl.replaceChildren();
+    var title = document.createElement('div');
+    title.textContent = '⬇ Import flavors';
+    title.style.cssText = 'font-family:"Baloo 2",cursive;font-weight:700;font-size:16px;margin-bottom:10px;color:#f5e9ff;';
+    panelEl.appendChild(title);
+
+    var hint = document.createElement('div');
+    hint.textContent = 'Paste exported JSON below:';
+    hint.style.cssText = 'font-size:11px;color:#caa6f5;margin-bottom:6px;';
+    panelEl.appendChild(hint);
+
+    var area = document.createElement('textarea');
+    area.style.cssText = 'width:100%;box-sizing:border-box;min-height:90px;padding:8px;border-radius:8px;border:1px solid #3a2a5c;background:#2a1b45;color:#f5e9ff;font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical;';
+    panelEl.appendChild(area);
+
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:6px;margin-top:10px;';
+    var loadBtn = smallBtn('Load', function(){
+      var parsed;
+      try { parsed = JSON.parse(area.value); }
+      catch(e) { alert('That is not valid JSON.'); return; }
+      if (!Array.isArray(parsed)) { alert('Expected a JSON array of flavors.'); return; }
+      var list = allCustomFlavors();
+      parsed.forEach(function(item){
+        if (!item || !item.name || !item.code) return;
+        list.push({
+          id: 'cf_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+          name: item.name,
+          site: item.site || '',
+          code: item.code,
+          on: false
+        });
+      });
+      saveCustomFlavors(list);
+      panelView = 'main';
+      renderPanel();
+    });
+    loadBtn.style.background = 'linear-gradient(100deg,#7b2ff7,#ff8fe0)';
+    loadBtn.style.border = 'none';
+    loadBtn.style.color = '#fff';
+    var cancelBtn = smallBtn('Cancel', function(){ panelView = 'main'; renderPanel(); });
+    btnRow.appendChild(loadBtn);
+    btnRow.appendChild(cancelBtn);
+    panelEl.appendChild(btnRow);
+  }
+
+  function renderPanel(){
+    ensureFont();
+    if (panelView === 'add') { renderAddView(); return; }
+    if (panelView === 'import') { renderImportView(); return; }
+
+    panelEl.replaceChildren();
+
+    var title = document.createElement('div');
+    title.textContent = '✨ Flavors';
+    title.style.cssText = 'font-family:"Baloo 2",cursive;font-weight:700;font-size:17px;margin-bottom:10px;color:#f5e9ff;';
+    panelEl.appendChild(title);
+
+    panelEl.appendChild(buildSearchInput());
+
+    var flavor = activeFlavor();
+    var shownAny = false;
+
+    if (flavor) {
+      var rows = [];
+      if (flavor.toggleTheme && matchesSearch('Anime Purple theme')) {
+        rows.push(buildToggleRow('🌸 Anime Purple theme', flavor.isThemeOn(), function(){
+          flavor.toggleTheme();
+          if (flavor.isThemeOn()) bounceMascot();
+          renderPanel();
+        }));
+      }
+      if (flavor.doomScroll && matchesSearch('Doom Scroll')) {
+        rows.push(buildToggleRow('💀 Doom Scroll', flavor.isScrollOn(), function(){
+          flavor.doomScroll();
+          setTimeout(renderPanel, 50);
+        }));
+      }
+      if (rows.length) {
+        shownAny = true;
+        var siteLabel = document.createElement('div');
+        siteLabel.textContent = flavor.label;
+        siteLabel.style.cssText = 'font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#caa6f5;margin-bottom:2px;';
+        panelEl.appendChild(siteLabel);
+        rows.forEach(function(r){ panelEl.appendChild(r); });
+      }
+    }
+
+    var customs = customFlavorsForSite().filter(function(f){ return matchesSearch(f.name); });
+    if (customs.length) {
+      shownAny = true;
+      var customLabel = document.createElement('div');
+      customLabel.textContent = 'Custom';
+      customLabel.style.cssText = 'font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#caa6f5;margin-top:14px;margin-bottom:2px;';
+      panelEl.appendChild(customLabel);
+      customs.forEach(function(cf){ panelEl.appendChild(buildCustomToggleRow(cf)); });
+    }
+
+    if (!shownAny) {
+      var none = document.createElement('div');
+      none.textContent = searchQuery ? 'No flavors match "' + searchQuery + '".' : (flavor ? 'Nothing here yet.' : 'No flavor built for this site yet.');
+      none.style.cssText = 'font-size:13px;color:#caa6f5;margin-top:6px;';
+      panelEl.appendChild(none);
+    }
+
+    panelEl.appendChild(buildToolbarRow());
+  }
+
+  var EDGE_HIDE = 40, EDGE_PEEK = 4, EDGE_SNAP = 90;
+  var savedState = prefs.mascotState || { edge: 'top', along: null };
+  var edge = ('edge' in savedState) ? savedState.edge : 'top';
+  var alongPos = savedState.along;
+  var freeX = savedState.freeX, freeY = savedState.freeY;
+
+  function edgeGeometry(state){
+    var w = (mascotEl && mascotEl.offsetWidth) || 88;
+    var h = (mascotEl && mascotEl.offsetHeight) || 83;
+    var amt = state === 'rest' ? EDGE_HIDE : EDGE_PEEK;
+    var style = {};
+    if (edge === 'top') {
+      style.top = (state === 'full' ? 8 : -amt) + 'px';
+      style.left = alongPos + 'px';
+    } else if (edge === 'bottom') {
+      style.top = (window.innerHeight - h + (state === 'full' ? -8 : amt)) + 'px';
+      style.left = alongPos + 'px';
+    } else if (edge === 'left') {
+      style.left = (state === 'full' ? 8 : -amt) + 'px';
+      style.top = alongPos + 'px';
+    } else if (edge === 'right') {
+      style.left = (window.innerWidth - w + (state === 'full' ? -8 : amt)) + 'px';
+      style.top = alongPos + 'px';
+    }
+    return style;
+  }
+
+  function applyEdgeState(state){
+    if (edge == null || !mascotEl) return;
+    var s = edgeGeometry(state);
+    mascotEl.style.top = s.top;
+    mascotEl.style.left = s.left;
+    mascotEl.style.right = 'auto';
+  }
+
+  function positionPanelNearMascot(){
+    var r = mascotEl.getBoundingClientRect();
+    var left = Math.min(Math.max(8, r.left + r.width / 2 - PANEL_W / 2), window.innerWidth - PANEL_W - 8);
+    var top = r.bottom + 10;
+    if (top + 260 > window.innerHeight) top = Math.max(8, r.top - 260);
+    panelEl.style.left = left + 'px';
+    panelEl.style.right = 'auto';
+    panelEl.style.top = top + 'px';
+  }
+
+  function togglePanel(){
+    panelOpen = !panelOpen;
+    if (panelOpen) {
+      applyEdgeState('full');
+      positionPanelNearMascot();
+      panelEl.style.opacity = '1';
+      panelEl.style.pointerEvents = 'auto';
+      renderPanel();
+      bounceMascot();
+    } else {
+      applyEdgeState('rest');
+      panelEl.style.opacity = '0';
+      panelEl.style.pointerEvents = 'none';
+      panelView = 'main';
+    }
+  }
+
+  function savePosition(){
+    if (edge == null) {
+      prefs.mascotState = { edge: null, freeX: freeX, freeY: freeY };
+    } else {
+      prefs.mascotState = { edge: edge, along: alongPos };
+    }
+    savePrefs(prefs);
+  }
+
+  var EDGE_ROTATE = { top: 0, right: 90, bottom: 180, left: -90 };
+  var mascotStyleTag;
+
+  function updateOrientationStyles(){
+    if (!mascotStyleTag) return;
+    var deg = (edge != null && EDGE_ROTATE[edge] != null) ? EDGE_ROTATE[edge] : 0;
+    mascotStyleTag.textContent =
+      '@keyframes __flavor_bob__{0%,100%{transform:rotate(' + deg + 'deg) translateY(0)}50%{transform:rotate(' + deg + 'deg) translateY(3px)}}' +
+      '@keyframes __flavor_bounce__{0%{transform:rotate(' + deg + 'deg) scale(1)}30%{transform:rotate(' + (deg - 6) + 'deg) scale(1.2)}55%{transform:rotate(' + (deg + 4) + 'deg) scale(.92)}100%{transform:rotate(' + deg + 'deg) scale(1)}}' +
+      '#__flavor_mascot__{animation:__flavor_bob__ 2.6s ease-in-out infinite;}' +
+      '#__flavor_mascot__.__flavor_bounce__{animation:__flavor_bounce__ .5s ease;}' +
+      '#__flavor_mascot__.__flavor_dragging__{animation:none;transition:none;cursor:grabbing;transform:none;}';
+  }
+
+  function buildMascot(){
+    mascotStyleTag = document.createElement('style');
+    document.head.appendChild(mascotStyleTag);
+    updateOrientationStyles();
+
+    mascotEl = document.createElement('div');
+    mascotEl.id = '__flavor_mascot__';
+    mascotEl.dir = 'ltr';
+    mascotEl.style.cssText = 'position:fixed;width:88px;height:83px;cursor:grab;z-index:2147483647;background-image:url(' + MASCOT_OPEN_SRC + ');background-size:contain;background-repeat:no-repeat;image-rendering:pixelated;filter:drop-shadow(0 4px 10px rgba(123,47,247,.55));transition:top .4s cubic-bezier(.34,1.56,.64,1),left .4s cubic-bezier(.34,1.56,.64,1);user-select:none;touch-action:none;';
+
+    if (edge == null) {
+      mascotEl.style.left = (typeof freeX === 'number' ? freeX : window.innerWidth / 2 - 44) + 'px';
+      mascotEl.style.top = (typeof freeY === 'number' ? freeY : window.innerHeight / 2 - 41) + 'px';
+      mascotEl.style.right = 'auto';
+    } else {
+      if (alongPos == null) alongPos = (edge === 'top' || edge === 'bottom') ? window.innerWidth - 152 : window.innerHeight / 2 - 41;
+      var s0 = edgeGeometry('rest');
+      mascotEl.style.top = s0.top;
+      mascotEl.style.left = s0.left;
+      mascotEl.style.right = 'auto';
+    }
+    document.body.appendChild(mascotEl);
+
+    mascotEl.onmouseenter = function(){ mascotHovering = true; applyEdgeState('peek'); };
+    mascotEl.onmouseleave = function(){ mascotHovering = false; if (!panelOpen) applyEdgeState('rest'); };
+
+    var dragging = false, justDragged = false, startX, startY, startLeft, startTop, pointerId, lastNx, lastNy;
+    mascotEl.addEventListener('pointerdown', function(e){
+      dragging = false;
+      pointerId = e.pointerId;
+      startX = e.clientX;
+      startY = e.clientY;
+      var r = mascotEl.getBoundingClientRect();
+      startLeft = r.left;
+      startTop = r.top;
+      lastNx = startLeft;
+      lastNy = startTop;
+    });
+    mascotEl.addEventListener('pointermove', function(e){
+      if (startX == null) return;
+      var dx = e.clientX - startX, dy = e.clientY - startY;
+      if (!dragging && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
+        dragging = true;
+        edge = null;
+        mascotEl.classList.add('__flavor_dragging__');
+        mascotEl.setPointerCapture(pointerId);
+      }
+      if (dragging) {
+        var w = mascotEl.offsetWidth, h = mascotEl.offsetHeight;
+        lastNx = Math.min(Math.max(0, startLeft + dx), window.innerWidth - w);
+        lastNy = Math.min(Math.max(0, startTop + dy), window.innerHeight - h);
+        mascotEl.style.left = lastNx + 'px';
+        mascotEl.style.top = lastNy + 'px';
+        mascotEl.style.right = 'auto';
+        if (panelOpen) positionPanelNearMascot();
+      }
+    });
+    mascotEl.addEventListener('pointerup', function(e){
+      if (dragging) {
+        var w = mascotEl.offsetWidth, h = mascotEl.offsetHeight;
+        var dLeft = lastNx, dRight = window.innerWidth - (lastNx + w);
+        var dTop = lastNy, dBottom = window.innerHeight - (lastNy + h);
+        var min = Math.min(dLeft, dRight, dTop, dBottom);
+        if (min < EDGE_SNAP) {
+          if (min === dTop) { edge = 'top'; alongPos = lastNx; }
+          else if (min === dBottom) { edge = 'bottom'; alongPos = lastNx; }
+          else if (min === dLeft) { edge = 'left'; alongPos = lastNy; }
+          else { edge = 'right'; alongPos = lastNy; }
+          updateOrientationStyles();
+          mascotEl.classList.remove('__flavor_dragging__');
+          applyEdgeState('rest');
+        } else {
+          edge = null;
+          freeX = lastNx;
+          freeY = lastNy;
+          updateOrientationStyles();
+          mascotEl.classList.remove('__flavor_dragging__');
+        }
+        savePosition();
+        justDragged = true;
+        setTimeout(function(){ justDragged = false; }, 0);
+      }
+      dragging = false;
+      startX = null;
+    });
+    mascotEl.onclick = function(){
+      if (justDragged) return;
+      togglePanel();
+    };
+
+    setInterval(function(){
+      mascotEl.style.backgroundImage = 'url(' + MASCOT_BLINK_SRC + ')';
+      setTimeout(function(){ mascotEl.style.backgroundImage = 'url(' + MASCOT_OPEN_SRC + ')'; }, 160);
+    }, 3600);
+
+    setInterval(function(){
+      if (edge == null || panelOpen || mascotHovering) return;
+      applyEdgeState('peek');
+      setTimeout(function(){ if (edge != null && !panelOpen && !mascotHovering) applyEdgeState('rest'); }, 1400);
+    }, 9000);
+
+    panelEl = document.createElement('div');
+    panelEl.id = '__flavor_panel__';
+    panelEl.dir = 'ltr';
+    panelEl.style.cssText = 'box-sizing:border-box;position:fixed;top:-500px;left:0;width:' + PANEL_W + 'px;max-height:70vh;overflow:auto;background:#1c1230;border:1px solid #3a2a5c;border-radius:16px;box-shadow:0 20px 50px rgba(0,0,0,.5);z-index:2147483646;padding:16px;font-family:Quicksand,sans-serif;color:#f5e9ff;opacity:0;pointer-events:none;transition:opacity .2s ease;';
+    document.body.appendChild(panelEl);
+
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && panelOpen) togglePanel(); });
+  }
+
+  buildMascot();
+
+  var flavorNow = activeFlavor();
+  if (flavorNow && flavorNow.applyTheme && prefs.ytTheme) flavorNow.applyTheme();
+
+  document.addEventListener('yt-navigate-finish', function(){
+    var f = activeFlavor();
+    if (f && f.applyTheme && prefs.ytTheme && !f.isThemeOn()) f.applyTheme();
+    if (panelOpen) renderPanel();
+  });
+
+  window.__flavorHub__ = { togglePanel: togglePanel, flavors: FLAVORS };
+}
