@@ -287,15 +287,14 @@
         <div class="mobile-head">📱 On a phone? There's no bookmarks bar to drag onto here.</div>
         <button class="run" id="mobileCopyBtn" onclick="copyCode('codeBox','mobileCopyBtn')">Copy the bookmarklet code</button>
         <div class="mobile-steps">
-          <div class="mobile-os"><b>iPhone / iPad (Safari)</b></div>
+          <div class="mobile-os">iPhone, iPad &amp; Android (Chrome or Safari)</div>
           <ol>
-            <li>Bookmark any page — Share → Add Bookmark</li>
-            <li>Bookmarks list → Edit → tap that bookmark</li>
+            <li>Bookmark any page (Safari: Share → Add Bookmark. Chrome: ⋮ menu → star icon)</li>
+            <li>Open your bookmarks list, find it, edit it</li>
             <li>Replace its <b>URL</b> field with what you just copied, save</li>
             <li>To run it: open the page you want to change, open your bookmarks list, tap it</li>
           </ol>
-          <div class="mobile-os">Android</div>
-          <p>Chrome on Android blocks bookmarklets from running. Use <b>Kiwi Browser</b> or <b>Firefox</b> instead, install Tampermonkey/Violentmonkey from its add-ons, create a new userscript, and paste the copied code as the script body (drop the leading <code>javascript:</code>).</p>
+          <p style="font-size:12px;color:var(--text-faint);margin-top:8px;">If tapping it does nothing on your browser: <b>Kiwi Browser</b> or <b>Firefox</b> support installing Tampermonkey/Violentmonkey, where you'd create a new userscript and paste the copied code as the script body (drop the leading <code>javascript:</code>).</p>
         </div>
       </div>
 
