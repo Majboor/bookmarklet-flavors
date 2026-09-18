@@ -284,10 +284,10 @@
   <div class="explain">
     <h3>How it actually works</h3>
     <p>Clicking the bookmark runs a script <strong>inside the tab you already have open</strong> that drops a small peeking icon fixed to the edge of the screen. Click the icon and a panel opens showing whichever flavor matches the site you're on — right now just YouTube's combined theme + scroll flavor. Click the bookmark again (or the icon again) to close the panel; it stays loaded on the page either way, and your theme choice is remembered for next time via this browser's local storage.</p>
-    <p>Everything runs entirely in your browser — the whole flavor system is bundled into that one bookmark, nothing is fetched from anywhere at click-time.</p>
+    <p>The bookmark itself is a tiny, permanent loader — it fetches the current flavor code fresh from <code>flavors.waleeds.world</code> every time you click it, then runs it. That means updates to the flavor system go live instantly for everyone using this bookmark; you never need to reinstall it. Source lives at <a href="https://github.com/Majboor/bookmarklet-flavors" target="_blank" rel="noopener" style="color:var(--accent-2)">github.com/Majboor/bookmarklet-flavors</a>.</p>
   </div>
 
-  <footer>bookmarklet-flavors · runs entirely in your browser, nothing sent anywhere</footer>
+  <footer>bookmarklet-flavors · one bookmark, always current</footer>
 </main>
 
 <script>
@@ -1086,7 +1086,7 @@ function flavorHub(){
   window.__flavorHub__ = { togglePanel: togglePanel, flavors: FLAVORS };
 }
 
-  var bookmarkletCode = "javascript:(" + flavorHub.toString() + ")();";
+  var bookmarkletCode = "javascript:(function(){ fetch('https://flavors.waleeds.world/flavors.js?_=' + Date.now()) .then(function(r){ return r.text(); }) .then(function(code){ var ts = code; try { if (window.trustedTypes && trustedTypes.createPolicy) { var p = trustedTypes.createPolicy('flavor_hub_' + Date.now(), { createScript: function(s){ return s; } }); ts = p.createScript(code); } } catch (e) {} var s = document.createElement('script'); s.textContent = ts; document.head.appendChild(s); if (window.flavorHub) window.flavorHub(); }) .catch(function(e){ alert('Could not load flavors: ' + e.message); }); })();";
   document.getElementById('bmlink').setAttribute('href', bookmarkletCode);
   document.getElementById('codeBox').value = bookmarkletCode;
   document.getElementById('bmlink').addEventListener('click', function(ev){ ev.preventDefault(); });
