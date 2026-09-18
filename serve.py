@@ -3,6 +3,12 @@ import http.server
 import socketserver
 
 class CORSHandler(http.server.SimpleHTTPRequestHandler):
+    def guess_type(self, path):
+        ctype = super().guess_type(path)
+        if ctype.startswith('text/') or ctype in ('application/javascript', 'application/json'):
+            return ctype + '; charset=utf-8'
+        return ctype
+
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
