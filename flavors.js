@@ -588,7 +588,9 @@ function flavorHub(){
     busy: false,
     lastError: null,
     chatFor: null,          // custom-flavor id being refined
-    pendingPrompt: null     // prefilled from an accepted suggestion
+    pendingPrompt: null,    // prefilled from an accepted suggestion
+    status: null,           // live progress during the generate/repair loop
+    lastVerdict: null       // what the page said about the last flavor
   };
 
   function siteKey(){ return location.hostname.replace(/^www\./, '').toLowerCase(); }
@@ -908,23 +910,49 @@ function flavorHub(){
 
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:6px;margin-top:6px;';
-    var genBtn = smallBtn(aiState.busy ? '⏳ Generating…' : '✨ Generate', function(){
+    if (aiState.status) {
+      var st = document.createElement('div');
+      st.textContent = aiState.status;
+      st.style.cssText = 'font-size:11px;color:#caa6f5;margin:6px 0;line-height:1.4;';
+      panelEl.appendChild(st);
+    }
+
+    var genBtn = smallBtn(aiState.busy ? '⏳ Working…' : '✨ Generate', function(){
       var prompt = ta.value.trim();
       if (!prompt) { ta.focus(); return; }
       if (aiState.busy) return;
       stopPicker(); stopRecording();
-      callGenerator({
+      aiState.busy = true;
+      generateWithRepair({
         domain: siteKey(),
         prompt: prompt,
         elements: aiState.picked,
         recording: aiState.recording,
         page: pageSnapshot(),
         history: []
-      }, function(e, res){
-        if (e) { renderPanel(); return; }
-        var cf = saveGenerated(res, prompt, null);
+      }, function(msg){
+        aiState.status = msg;
+        renderPanel();
+      }, function(err, gen, verdict, attempts, hist){
+        aiState.busy = false;
+        if (err || !gen) {
+          aiState.status = null;
+          aiState.lastError = (err && err.message) || 'generation failed';
+          renderPanel();
+          return;
+        }
+        // It is already applied and measured - save it in the ON state.
+        var cf = saveGenerated(gen, prompt, null);
+        cf.on = !!(verdict && verdict.worked);
+        cf.verdict = verdict ? verdictLine(verdict) : null;
+        cf.attempts = attempts;
+        saveCustomFlavors(allCustomFlavors());
         aiState.picked = []; aiState.recording = null;
         aiState.chatFor = cf.id;
+        aiState.status = null;
+        aiState.lastVerdict = (verdict ? verdictLine(verdict) : '')
+          + (attempts ? '  (after ' + attempts + ' self-repair'
+             + (attempts === 1 ? '' : 's') + ')' : '');
         panelView = 'main';
         renderPanel();
         bounceMascot();
@@ -1190,6 +1218,265 @@ function flavorHub(){
     setTimeout(maybeSuggest, SUGGEST_DELAY);
   }
 
+  // ===================================================================
+  //  Self-verification + repair loop
+  //  A flavor whose selectors match nothing applies "successfully" and
+  //  changes nothing. The page is the only source of truth for what
+  //  actually exists - especially on logged-in pages a headless check can
+  //  never reach - so measure here and feed the evidence back to the model.
+  // ===================================================================
+
+  // Before generating ANYTHING, run the memory's own selectors against this live
+  // page and hand the model the counts. It then starts from what is actually here
+  // rather than from what the memory file believed weeks ago.
+  function fetchMemorySelectors(domain, cb){
+    fetch(API_BASE + '/memory/' + domain + '.md?_=' + Date.now())
+      .then(function(r){ return r.ok ? r.text() : ''; })
+      .then(function(md){
+        var set = {}, re = /`([^`\n]{2,140})`/g, m;
+        while ((m = re.exec(md)) !== null) {
+          var t = m[1].trim();
+          if (/\s(is|are|the|and|or|not|use|to)\s/i.test(t)) continue;   // prose in backticks
+          if (/[{};]/.test(t)) continue;
+          if (/^--/.test(t)) continue;                                    // css custom props
+          if (!/[#.\[]/.test(t) && !/^[a-zA-Z][\w-]*(-[\w-]+)+$/.test(t)) continue;
+          set[t] = true;
+        }
+        cb(Object.keys(set).slice(0, 80));
+      })
+      .catch(function(){ cb([]); });
+  }
+
+  function domSnapshot(){
+    var tags = {};
+    document.querySelectorAll('*').forEach(function(el){
+      var t = el.tagName.toLowerCase();
+      if (t.indexOf('-') !== -1) tags[t] = (tags[t] || 0) + 1;
+    });
+    var top = Object.keys(tags).map(function(k){ return [k, tags[k]]; })
+      .sort(function(a,b){ return b[1]-a[1]; }).slice(0, 25)
+      .map(function(x){ return x[0] + ':' + x[1]; });
+    var shapes = {};
+    [].slice.call(document.querySelectorAll('a[href]')).slice(0, 150).forEach(function(a){
+      var c = (typeof a.className === 'string' ? a.className.trim().split(/\s+/)[0] : '');
+      var k = 'a' + (a.id ? '#' + a.id : '') + (c ? '.' + c : '');
+      shapes[k] = (shapes[k] || 0) + 1;
+    });
+    return {
+      components: top,
+      linkShapes: Object.keys(shapes).map(function(k){ return k + ':' + shapes[k]; })
+                    .sort().slice(0, 12)
+    };
+  }
+
+  // The "console output" the model gets on the FIRST attempt.
+  function livePageReport(domain, cb){
+    fetchMemorySelectors(domain, function(sels){
+      var probe = probeSelectors(sels);
+      var snap = domSnapshot();
+      cb({
+        url: location.href, title: document.title,
+        probe: probe,
+        alive: sels.filter(function(s){ return probe[s] > 0; }),
+        dead: sels.filter(function(s){ return probe[s] === 0; }),
+        components: snap.components, linkShapes: snap.linkShapes
+      });
+    });
+  }
+
+  var REPAIR_URL = API_BASE + '/api/repair';
+  var OBSERVE_URL = API_BASE + '/api/observe';
+  var MAX_REPAIRS = 3;
+
+  // Pull every selector the flavor depends on: CSS rule heads plus any
+  // querySelector-family argument.
+  function extractSelectors(code){
+    var set = {};
+    function add(s){
+      if (!s) return;
+      s = String(s).replace(/\/\*[\s\S]*?\*\//g, '').trim();
+      if (!s || s.length > 180) return;
+      if (/^@/.test(s)) return;                       // @media / @keyframes
+      if (/\b(function|return|var|let|const|if|else|for|while|typeof)\b/.test(s)) return;
+      if (!/[#.\[a-zA-Z]/.test(s)) return;
+      if (/^\d/.test(s)) return;                      // keyframe stops: 0%, 50%
+      if (/%$/.test(s)) return;
+      // Reject fragments of JS source. Slicing a multi-line array literal used to
+      // yield things like "[\n  '#secondary", which were then reported to the model
+      // as invalid selectors IT had written - sending it chasing its own tail.
+      if (/['"`\n\r]/.test(s)) return;
+      var opens = (s.match(/\[/g) || []).length, closes = (s.match(/\]/g) || []).length;
+      if (opens !== closes) return;
+      var po = (s.match(/\(/g) || []).length, pc = (s.match(/\)/g) || []).length;
+      if (po !== pc) return;
+      // Must survive being parsed as an actual selector.
+      try { document.querySelector(s); } catch(e){ return; }
+      set[s] = true;
+    }
+    // CSS rule heads: everything before a { ... } that has no nested braces
+    var re = /([^{}();=]+)\{[^{}]*\}/g, m;
+    while ((m = re.exec(code)) !== null) {
+      m[1].split(',').forEach(add);
+    }
+    // querySelector / querySelectorAll / closest / matches
+    var re2 = /(?:querySelectorAll|querySelector|closest|matches)\s*\(\s*(['"`])([\s\S]*?)\1\s*\)/g;
+    while ((m = re2.exec(code)) !== null) add(m[2]);
+    return Object.keys(set);
+  }
+
+  function probeSelectors(sels){
+    var out = {};
+    sels.forEach(function(s){
+      try { out[s] = document.querySelectorAll(s).length; }
+      catch(e){ out[s] = -1; }     // -1 = invalid selector syntax
+    });
+    return out;
+  }
+
+  var FP_PROPS = ['display','visibility','opacity','color','backgroundColor','backgroundImage',
+                  'borderRadius','borderTopWidth','fontSize','fontFamily','fontWeight',
+                  'width','height','boxShadow','filter','transform'];
+
+  // Fingerprint the elements the flavor claims to target, so we can tell
+  // whether applying it changed anything real.
+  function fingerprint(sels){
+    var fp = {};
+    sels.forEach(function(s){
+      var els;
+      try { els = document.querySelectorAll(s); } catch(e){ return; }
+      if (!els.length) return;
+      var sample = [];
+      for (var i = 0; i < Math.min(3, els.length); i++) {
+        var cs = window.getComputedStyle(els[i]);
+        var rec = {};
+        FP_PROPS.forEach(function(p){ rec[p] = cs[p]; });
+        var r = els[i].getBoundingClientRect();
+        rec.__box = Math.round(r.width) + 'x' + Math.round(r.height);
+        sample.push(rec);
+      }
+      fp[s] = sample;
+    });
+    var bodyCs = window.getComputedStyle(document.body);
+    fp.__body = { bg: bodyCs.backgroundColor, color: bodyCs.color, font: bodyCs.fontFamily };
+    return fp;
+  }
+
+  function diffFingerprint(a, b){
+    var changes = [];
+    Object.keys(a).forEach(function(sel){
+      if (sel === '__body') return;
+      var x = a[sel], y = b[sel];
+      if (!y || x.length !== y.length) { changes.push({ sel: sel, prop: '__count' }); return; }
+      for (var i = 0; i < x.length; i++) {
+        for (var k in x[i]) {
+          if (x[i][k] !== y[i][k]) { changes.push({ sel: sel, prop: k }); break; }
+        }
+      }
+    });
+    ['bg','color','font'].forEach(function(k){
+      if (a.__body[k] !== b.__body[k]) changes.push({ sel: 'body', prop: k });
+    });
+    return changes;
+  }
+
+  // Apply the flavor and report what measurably happened.
+  function applyAndVerify(code, cb){
+    var sels = extractSelectors(code);
+    var probe = probeSelectors(sels);
+    var before = fingerprint(sels);
+    var threw = null;
+    try { runFlavorCode(code); }
+    catch(e){ threw = String(e && e.message || e); }
+    setTimeout(function(){
+      var after = fingerprint(sels);
+      var changes = threw ? [] : diffFingerprint(before, after);
+      var matched = sels.filter(function(s){ return probe[s] > 0; });
+      var missed  = sels.filter(function(s){ return probe[s] === 0; });
+      var invalid = sels.filter(function(s){ return probe[s] === -1; });
+      cb({
+        threw: threw,
+        selectors: sels, probe: probe,
+        matched: matched, missed: missed, invalid: invalid,
+        changes: changes,
+        changedProps: changes.length,
+        worked: !threw && changes.length > 0
+      });
+    }, 450);
+  }
+
+  function verdictLine(v){
+    if (v.threw) return '⚠️ threw: ' + v.threw.slice(0, 80);
+    if (v.worked) return '✅ applied — ' + v.changedProps + ' style change'
+      + (v.changedProps === 1 ? '' : 's') + ' across '
+      + v.matched.length + '/' + v.selectors.length + ' selectors';
+    if (!v.matched.length) return '❌ matched nothing — all ' + v.selectors.length
+      + ' selectors found 0 elements on this page';
+    return '❌ no visible change (' + v.matched.length + '/' + v.selectors.length
+      + ' selectors matched, but nothing rendered differently)';
+  }
+
+  // Tell the server what really exists here, so the memory can improve from
+  // real sessions - including logged-in pages nothing else can reach.
+  function reportObservation(domain, probe){
+    try {
+      fetch(OBSERVE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: domain, url: location.href,
+                               title: document.title, probe: probe })
+      }).catch(function(){});
+    } catch(e){}
+  }
+
+  // The self-heal loop: apply, measure, and if it did nothing hand the
+  // evidence back to the model and try again.
+  function generateWithRepair(payload, onStatus, done){
+    var attempt = 0;
+    var history = [];      // every attempt + what the page said about it
+
+    function attemptOnce(gen){
+      applyAndVerify(gen.code, function(v){
+        reportObservation(payload.domain, v.probe);
+        history.push({
+          code: gen.code, notes: gen.notes,
+          missed: v.missed, invalid: v.invalid, matched: v.matched,
+          threw: v.threw, changedProps: v.changedProps, verdict: verdictLine(v)
+        });
+        if (v.worked || attempt >= MAX_REPAIRS) { done(null, gen, v, attempt, history); return; }
+        try { runFlavorCode(gen.code); } catch(e){}   // undo the failed attempt
+        attempt++;
+        onStatus('🔧 ' + verdictLine(v) + ' — fixing (' + attempt + '/' + MAX_REPAIRS + ')…');
+        fetch(REPAIR_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            domain: payload.domain, prompt: payload.prompt, code: gen.code,
+            probe: v.probe, missed: v.missed, invalid: v.invalid, matched: v.matched,
+            threw: v.threw, changedProps: v.changedProps,
+            page: payload.page, pageProbe: payload.pageProbe,
+            history: history, attempt: attempt
+          })
+        })
+          .then(function(r){ return r.text(); })
+          .then(function(t){
+            var j = null; try { j = JSON.parse(t); } catch(e){}
+            if (!j || !j.code) throw new Error((j && j.error) || 'repair returned no code');
+            attemptOnce(j);
+          })
+          .catch(function(e){ done(e, gen, v, attempt, history); });
+      });
+    }
+
+    onStatus('🔍 reading this page…');
+    livePageReport(payload.domain, function(report){
+      payload.pageProbe = report;
+      onStatus('⏳ generating…');
+      callGenerator(payload, function(err, gen){
+        if (err) { done(err, null, null, 0, history); return; }
+        onStatus('🔬 checking it against this page…');
+        attemptOnce(gen);
+      });
+    });
+  }
+
   function renderPanel(){
     ensureFont();
     if (panelView === 'add') { renderAddView(); return; }
@@ -1203,6 +1490,16 @@ function flavorHub(){
     title.textContent = '✨ Flavors';
     title.style.cssText = 'font-family:"Baloo 2",cursive;font-weight:700;font-size:17px;margin-bottom:10px;color:#f5e9ff;';
     panelEl.appendChild(title);
+
+    if (aiState.lastVerdict) {
+      var vd = document.createElement('div');
+      vd.textContent = aiState.lastVerdict;
+      vd.style.cssText = 'font-size:11px;line-height:1.4;margin:-4px 0 8px;padding:6px 8px;border-radius:8px;'
+        + (aiState.lastVerdict.indexOf('✅') === 0
+            ? 'background:rgba(120,220,140,.12);color:#9be8a0;'
+            : 'background:rgba(255,140,140,.12);color:#ff9b9b;');
+      panelEl.appendChild(vd);
+    }
 
     panelEl.appendChild(buildSearchInput());
 
@@ -1512,5 +1809,9 @@ function flavorHub(){
 
   window.__flavorHub__ = { togglePanel: togglePanel, flavors: FLAVORS,
                            suggestNow: maybeSuggest, analyzeRegions: analyzeRegions,
-                           runFlavorCode: runFlavorCode };
+                           runFlavorCode: runFlavorCode,
+                           generateWithRepair: generateWithRepair,
+                           applyAndVerify: applyAndVerify,
+                           extractSelectors: extractSelectors,
+                           livePageReport: livePageReport };
 }

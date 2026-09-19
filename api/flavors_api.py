@@ -203,6 +203,26 @@ def build_user_message(body, memory):
     if body.get("currentCode"):
         parts.append("# The flavor as it stands now - MODIFY this, do not start over\n"
                      "```javascript\n%s\n```" % body["currentCode"])
+    pp = body.get("pageProbe") or {}
+    if pp:
+        lines = ["# LIVE PAGE PROBE - measured in the user's browser just now",
+                 "This is GROUND TRUTH and overrides the memory file where they disagree."]
+        if pp.get("alive"):
+            lines.append("## Memory selectors that MATCH on this exact page")
+            lines += ["- `%s` -> %s" % (x, (pp.get("probe") or {}).get(x)) for x in pp["alive"][:35]]
+        if pp.get("dead"):
+            lines.append("## Memory selectors that match ZERO here - DO NOT USE THEM")
+            lines += ["- `%s`" % x for x in pp["dead"][:35]]
+        if pp.get("components"):
+            lines.append("## Custom elements present: " + ", ".join(pp["components"][:25]))
+        if pp.get("linkShapes"):
+            lines.append("## Link shapes: " + ", ".join(pp["linkShapes"][:12]))
+        parts.append("\n".join(lines))
+
+    obs = observations_for(body.get("domain"))
+    if obs:
+        parts.append("# Selector counts observed in REAL sessions on this domain\n"
+                     "(ground truth from live pages, including logged-in ones)\n" + obs)
     parts.append("# What the user wants\n" + str(body.get("prompt", "")))
     return "\n\n".join(parts)
 
@@ -329,6 +349,156 @@ def handle_suggest(body):
                  "signals": {"task": task, "taskConf": task_conf, "clutter": clutter}}
 
 
+
+OBS_DIR = os.path.join(MEMORY_DIR, "observed")
+
+
+def observations_for(domain):
+    """Selector counts seen in REAL sessions, including logged-in pages that no
+    headless check can reach. This is how the memory improves by itself."""
+    safe = re.sub(r"[^a-z0-9.\-]", "", str(domain or "").lower())
+    path = os.path.join(OBS_DIR, safe + ".json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    rows = []
+    for sel, rec in sorted(data.items(), key=lambda kv: -max(kv[1].get("counts") or [0])):
+        counts = rec.get("counts") or []
+        if not counts:
+            continue
+        hi = max(counts)
+        rows.append("  %-62s %s  (seen %dx, pages: %s)" % (
+            sel, ("%d MATCHES" % hi) if hi else "0 - DEAD HERE",
+            len(counts), ", ".join((rec.get("pages") or [])[:2])))
+    return "\n".join(rows[:60]) if rows else None
+
+
+def handle_observe(body):
+    domain = re.sub(r"[^a-z0-9.\-]", "", str(body.get("domain") or "").lower())
+    probe = body.get("probe") or {}
+    if not domain or not isinstance(probe, dict):
+        return 400, {"error": "domain and probe required"}
+    os.makedirs(OBS_DIR, exist_ok=True)
+    path = os.path.join(OBS_DIR, domain + ".json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        data = {}
+    page = str(body.get("url") or "")[:120]
+    for sel, n in list(probe.items())[:120]:
+        if not isinstance(n, int) or n < 0:
+            continue
+        rec = data.setdefault(str(sel)[:180], {"counts": [], "pages": []})
+        rec["counts"] = (rec["counts"] + [n])[-10:]
+        if page and page not in rec["pages"]:
+            rec["pages"] = (rec["pages"] + [page])[-5:]
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=1)
+    os.replace(tmp, path)
+    return 200, {"ok": True, "tracked": len(data)}
+
+
+REPAIR_SYSTEM = SYSTEM + """
+
+## YOU ARE REPAIRING A FLAVOR THAT DID NOT WORK
+You will be given your previous code and MEASURED EVIDENCE from the live page.
+That evidence is ground truth - it was taken in the real browser, on the real
+page, in the user's real session. It overrides any assumption you made.
+
+- A selector with 0 matches DOES NOT EXIST on this page. Replace it. Do not keep it
+  "just in case" and do not simply add `!important` to it.
+- An INVALID selector is a syntax error you wrote. Fix or drop it.
+- If selectors matched but NOTHING CHANGED VISUALLY, your CSS lost to the site's own
+  rules: raise specificity or add `!important`, and check you are not styling a
+  wrapper whose child paints over it.
+- Prefer selectors that the evidence shows actually match on THIS page.
+Return the same JSON contract. Fix the code; do not start from scratch."""
+
+
+def handle_repair(body):
+    if not body.get("domain") or not body.get("code"):
+        return 400, {"error": "domain and code required"}
+    memory = load_memory(body["domain"])
+    if memory is None:
+        return 404, {"error": "No flavor memory for " + str(body["domain"])}
+
+    probe = body.get("probe") or {}
+    missed = body.get("missed") or []
+    invalid = body.get("invalid") or []
+    matched = body.get("matched") or []
+
+    ev = ["# MEASURED EVIDENCE FROM THE LIVE PAGE (ground truth)"]
+    if body.get("threw"):
+        ev.append("The code THREW at runtime: " + str(body["threw"])[:300])
+    if missed:
+        ev.append("## These selectors matched ZERO elements - they do not exist here\n"
+                  + "\n".join("- `%s`" % m for m in missed[:25]))
+    if invalid:
+        ev.append("## These selectors are INVALID syntax\n"
+                  + "\n".join("- `%s`" % m for m in invalid[:10]))
+    if matched:
+        ev.append("## These DID match (counts)\n"
+                  + "\n".join("- `%s` -> %s" % (m, probe.get(m)) for m in matched[:25]))
+    if not body.get("threw") and matched and not missed:
+        ev.append("## Nothing changed visually even though selectors matched.\n"
+                  "Your CSS is being overridden by the site. Raise specificity / add !important.")
+    pp = body.get("pageProbe") or {}
+    if pp.get("alive"):
+        ev.append("## Selectors CONFIRMED present on this page (use these)\n"
+                  + "\n".join("- `%s` -> %s" % (x, (pp.get("probe") or {}).get(x))
+                             for x in pp["alive"][:30]))
+    if pp.get("dead"):
+        ev.append("## Selectors CONFIRMED absent on this page (never use these)\n"
+                  + "\n".join("- `%s`" % x for x in pp["dead"][:30]))
+    obs = observations_for(body["domain"])
+    if obs:
+        ev.append("## Selector counts observed in real sessions on this domain\n" + obs)
+
+    user = ("# Verified flavor memory for %s\n\n%s\n\n%s\n\n"
+            "# The code that failed\n```javascript\n%s\n```\n\n"
+            "# What the user originally asked for\n%s\n\n"
+            "This is repair attempt %s. Fix it."
+            % (body["domain"], memory, "\n\n".join(ev), body["code"],
+               body.get("prompt", ""), body.get("attempt", 1)))
+    try:
+        # Replay every previous attempt as real turns. Without this the model
+        # happily re-proposes a selector it already proved dead.
+        msgs = [{"role": "system", "content": REPAIR_SYSTEM}]
+        for h in (body.get("history") or [])[:-1][-4:]:
+            msgs.append({"role": "assistant",
+                         "content": json.dumps({"code": str(h.get("code", ""))[:3000],
+                                                "notes": str(h.get("notes", ""))[:200]})})
+            fb = ["That attempt was measured in the live page: " + str(h.get("verdict", ""))]
+            if h.get("missed"):
+                fb.append("Matched ZERO: " + ", ".join("`%s`" % m for m in h["missed"][:15]))
+            if h.get("threw"):
+                fb.append("It threw: " + str(h["threw"])[:200])
+            msgs.append({"role": "user", "content": "\n".join(fb)})
+        msgs.append({"role": "user", "content": user})
+        data = post_json(OR_CHAT, {
+            "model": GEN_MODEL, "temperature": 0.3,
+            "reasoning": {"effort": "low"}, "max_tokens": 12000,
+            "messages": msgs})
+    except urllib.error.HTTPError as e:
+        return 502, {"error": "Model error %s: %s" % (e.code, e.read()[:200].decode("utf8", "replace"))}
+    content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+    if not content:
+        return 502, {"error": "Model returned no content"}
+    parsed = extract_json(content)
+    if not parsed or not parsed.get("code"):
+        return 502, {"error": "Model did not return usable code"}
+    if BANNED.search(parsed["code"]):
+        return 422, {"error": "Repaired code used a forbidden sink"}
+    return 200, {"name": str(parsed.get("name") or "AI flavor")[:40], "code": parsed["code"],
+                 "notes": str(parsed.get("notes") or "")[:400], "usage": data.get("usage")}
+
+
 REQ_LOG = os.path.join(MEMORY_DIR, "..", "requests.jsonl")
 
 
@@ -381,14 +551,18 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             return self._send(400, {"error": "bad JSON body"})
-        if not KEY:
-            return self._send(500, {"error": "Server missing OPENROUTER_API_KEY"})
         route = self.path.split("?")[0].rstrip("/")
+        if route not in ("/api/observe", "/api/request") and not KEY:
+            return self._send(500, {"error": "Server missing OPENROUTER_API_KEY"})
         try:
             if route == "/api/generate":
                 return self._send(*handle_generate(body))
             if route == "/api/suggest":
                 return self._send(*handle_suggest(body))
+            if route == "/api/repair":
+                return self._send(*handle_repair(body))
+            if route == "/api/observe":
+                return self._send(*handle_observe(body))
             if route == "/api/request":
                 return self._send(*handle_request(body))
         except Exception as e:
