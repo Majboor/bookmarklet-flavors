@@ -110,6 +110,169 @@ no sending anything anywhere.
 Match the request's spirit - if they ask for playful, be playful. Keep it to one
 <style> element plus the minimum JS the request actually needs."""
 
+AUTOMATION_SYSTEM = """You write "automations": self-contained JavaScript that REPEATS an action
+the user was doing manually - clicking "load more"/"next", expanding items, or scrolling - so it
+happens automatically and faster. It is injected into a live page that is ALREADY LOADED, by a
+bookmarklet. This is a DIFFERENT, HIGHER-RISK task than restyling: your code will click real
+elements and scroll the real page on the user's behalf. A server-side classifier has already
+confirmed the target action is safe to repeat (pagination/expand/scroll only) - your job is to
+write code that does ONLY that, nothing more.
+
+## Output contract
+Reply with ONE JSON object and nothing else. No prose, no markdown fence.
+{"name":"<3-4 word automation name>","code":"<javascript>","notes":"<one sentence on what it does>"}
+
+## 1. SELF-TOGGLING (required)
+Same contract as always: running the code again must fully stop and clean up.
+
+  var ID='__flavor_<slug>__';
+  var prev=document.getElementById(ID);
+  if(prev){ prev.remove(); /* ALSO clearInterval/cancelAnimationFrame + removeEventListener */ return; }
+  var st=document.createElement('div'); st.id=ID; st.style.display='none';
+  document.body.appendChild(st);
+  var timer=setInterval(function(){ ... }, 900);
+
+## 2. WHAT YOU MAY DO (and nothing else)
+- `window.scrollBy(...)`, `window.scrollTo(...)`, `element.scrollIntoView(...)`
+- `element.click()` ONLY on an element matching the SAME selector/shape as the elements shown
+  below, and only when it currently exists and is visible.
+- A polling loop (`setInterval` with a function, or `requestAnimationFrame`) that repeats the
+  single action on a sane interval (>=600ms between clicks; scrolling can be smoother).
+- Stopping ITSELF once there is nothing left to do (selector no longer found / scrollHeight
+  stops growing after a few tries) - it must not spin forever doing nothing.
+
+## 3. WHAT YOU MUST NEVER DO
+- NEVER submit a form, call `.submit()`, or send Enter into a text field.
+- NEVER click anything whose text/aria could plausibly mean buy, pay, checkout, subscribe,
+  delete, remove, cancel, unfollow, block, report, share, post, send, log in, log out, sign up,
+  or connect/grant access - even if it superficially resembles the approved target. If in doubt,
+  do not click it; write a no-op instead.
+- NEVER make a network request (fetch/XHR/WebSocket/beacon), read or write cookies, touch
+  localStorage/sessionStorage page data, or read/set form field values.
+- NEVER navigate the page (`location.href=`, `history.pushState`, following a link to a
+  different page) unless that IS the approved pagination action itself.
+
+## 4. PAUSE ON REAL USER ACTIVITY
+If the user manually scrolls or clicks elsewhere while this is running, STOP the loop (clear the
+timer) rather than fighting them. Do not resume on its own - the toggle re-enables it.
+
+## 5. TRUSTED TYPES, SELECTORS, DEFENSIVE CODING
+Same rules as always: no innerHTML/eval/new Function, build nodes with createElement, guard
+every querySelector result, never throw, running twice must not double-apply."""
+
+# Fixed vocabulary for the automation SAFETY GATE. Only a "kind" in
+# SAFE_ACTION_KINDS may ever proceed to code generation - everything in
+# UNSAFE_ACTION_KINDS, and anything the classifier isn't confident about, is
+# refused outright. This is deliberately conservative: a missed automation
+# costs nothing, a wrongly-automated purchase/delete/submit is real harm.
+SAFE_ACTION_KINDS = {
+    "pagination": "A 'next page', 'load more', 'show more' click or infinite-scroll trigger",
+    "expand": "Expand/collapse, 'read more', an accordion or a details toggle",
+    "dismiss": "Closing a popup, cookie banner or overlay that is safe to dismiss repeatedly",
+}
+UNSAFE_ACTION_KINDS = {
+    "submit": "Submits a form, posts a comment or message, or sends something",
+    "purchase": "Buy, checkout, pay, add to cart, subscribe or upgrade to a paid plan",
+    "destructive": "Delete, remove, cancel, unfollow, unsubscribe, block or report",
+    "auth": "Log in, log out, sign up, connect an account, or grant a permission",
+    "share": "Share, post publicly, invite someone, or send to a contact",
+    "navigate": "Follows a link to a DIFFERENT page or site the user did not ask to leave",
+    "unclear": "Cannot tell from the evidence what this click actually does",
+}
+
+
+def gate_workflow_safety(wf_kind, evidence):
+    """The one hard safety boundary for automation. Plain scrolling is always
+    safe. A repeated CLICK is classified by jev against a fixed vocabulary
+    BEFORE any code is written; only an explicitly-safe, confident reading
+    is allowed through. Nothing here is guessed - an ambiguous classifier
+    result refuses, it does not default to permissive."""
+    if wf_kind == "scroll":
+        return True, "scroll", 0.99
+    els = evidence if isinstance(evidence, list) else []
+    if not els:
+        return False, "unclear", 0.0
+    sample = "\n".join(
+        "- <%s> text=%r (%s DOM matches)" % (e.get("tag"), str(e.get("text") or "")[:80],
+                                             e.get("matches"))
+        for e in els[:6])
+    state = ("The user repeatedly clicked what appears to be the SAME kind of element, "
+             "%d times in a row:\n%s" % (len(els), sample))
+    questions = {"kind": {"type": "choice",
+                          "instructions": "What kind of action does this click most likely perform?",
+                          "criteria": dict(SAFE_ACTION_KINDS, **UNSAFE_ACTION_KINDS)}}
+    try:
+        a = post_json(OR_DECISIONS, {"model": JEV_MODEL, "state": state,
+                                     "questions": questions}, timeout=60)["answers"]
+    except Exception:
+        return False, "unclear", 0.0
+    choice = (a.get("kind") or {}).get("choice")
+    conf = ((a.get("kind") or {}).get("probabilities") or {}).get(choice, 0)
+    return (choice in SAFE_ACTION_KINDS and conf >= 0.6), choice, conf
+
+
+def handle_generate_automation(body):
+    domain = str(body.get("domain") or "")
+    wf_kind = body.get("workflowKind")
+    evidence = body.get("evidence")
+    if not domain or wf_kind not in ("click", "scroll"):
+        return 400, {"error": "domain and a valid workflowKind required"}
+
+    safe, gate_kind, conf = gate_workflow_safety(wf_kind, evidence)
+    if not safe:
+        return 422, {"error": "this doesn't look safe to automate (%s, %.0f%% confidence) - "
+                              "only scrolling, pagination, expand/collapse and dismiss are "
+                              "ever automated" % (gate_kind, conf * 100)}
+
+    if wf_kind == "scroll":
+        hits = evidence.get("hits") if isinstance(evidence, dict) else 3
+        desc = "The user has hit the bottom of the page and scrolled again %s times." % hits
+        target = ("Auto-scroll toward the bottom at a smooth, steady pace, pausing briefly "
+                 "whenever the page height stops growing (nothing new is loading) and "
+                 "resuming if it grows again.")
+    else:
+        els = evidence if isinstance(evidence, list) else []
+        sample = "\n".join(
+            "- `%s` (<%s>%s)" % (e.get("selector"), e.get("tag"),
+                                 ' - "%s"' % e["text"] if e.get("text") else "")
+            for e in els[:8])
+        desc = ("The user repeatedly clicked the same kind of element, classified as "
+               "**%s**:\n%s" % (gate_kind, sample))
+        target = ("Repeat that exact click automatically on a safe interval, using the SAME "
+                 "selector pattern shown above, stopping once it no longer matches anything.")
+
+    user_msg = ("# Domain\n%s\n\n# Detected pattern (%s, server-approved as: %s)\n%s\n\n"
+               "# What to automate\n%s\n\nToday is %s."
+               % (domain, wf_kind, gate_kind, desc, target, time.strftime("%Y-%m-%d")))
+
+    try:
+        data = post_json(OR_CHAT, {
+            "model": GEN_MODEL, "temperature": 0.3,
+            "reasoning": {"effort": "low"}, "max_tokens": 12000,
+            "messages": [{"role": "system", "content": AUTOMATION_SYSTEM},
+                         {"role": "user", "content": user_msg}]}, timeout=240)
+    except urllib.error.HTTPError as e:
+        return 502, {"error": "Model error %s: %s" % (e.code, e.read()[:300].decode("utf8", "replace"))}
+    content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+    if not content:
+        return 502, {"error": "Model returned no content"}
+    parsed = extract_json(content)
+    if not parsed or not parsed.get("code"):
+        return 502, {"error": "Model did not return usable code", "raw": content[:500]}
+    if BANNED.search(parsed["code"]):
+        return 422, {"error": "Generated code used a forbidden sink; try again."}
+    # Defense in depth beyond the prompt instructions: never let generated
+    # automation code make a network call, submit anything, or navigate,
+    # regardless of what the model was told.
+    if re.search(r"\bfetch\s*\(|XMLHttpRequest|WebSocket\s*\(|sendBeacon|\.submit\s*\("
+                r"|location\.href\s*=|location\.assign\s*\(|location\.replace\s*\(",
+                parsed["code"]):
+        return 422, {"error": "Generated code touched the network or navigation; refused."}
+    return 200, {"name": str(parsed.get("name") or "Automation")[:40], "code": parsed["code"],
+                 "notes": str(parsed.get("notes") or "")[:400], "gateKind": gate_kind,
+                 "usage": data.get("usage")}
+
+
 TASKS = {
     "watching": "watching a video", "reading": "reading an article or docs",
     "shopping": "browsing products", "working": "working in an app or dashboard",
@@ -228,6 +391,8 @@ def build_user_message(body, memory):
 
 
 def handle_generate(body):
+    if body.get("kind") == "automation":
+        return handle_generate_automation(body)
     if not body.get("prompt") or not body.get("domain"):
         return 400, {"error": "domain and prompt required"}
     memory = load_memory(body["domain"])

@@ -669,6 +669,155 @@ function flavorHub(){
     };
   }
 
+  // ---- workflow detection ---------------------------------------------
+  //
+  // Passively notice a REPEATED pattern (same click shape 3x, or "scroll to
+  // the bottom" 3x) and offer, via a small cursor-anchored badge, to hand it
+  // over to a generated automation. This is cheap and purely local - no
+  // network call per click/scroll. jev is only consulted ONCE, when a
+  // pattern crosses the threshold, and its job there is a SAFETY GATE:
+  // classify whether the pattern is safe to ever auto-execute (pagination,
+  // load-more, expand, scroll) before any code gets written - never a
+  // destructive/irreversible action (submit, buy, delete, follow/unfollow,
+  // logout). That gate lives server-side in handle_generate_automation, not
+  // here, so it cannot be bypassed by anything running on the page.
+  var WF = { clicks: [], scrolls: [], badge: null, cooldownUntil: 0 };
+  var WF_WINDOW = 20000;            // only look at the last 20s of activity
+  var WF_CLICK_REPEATS = 3;         // same click "shape" 3x -> pattern
+  var WF_SCROLL_REPEATS = 3;        // hit page-bottom 3x -> pattern
+  var WF_COOLDOWN = 5 * 60 * 1000;  // one offer per 5 min, accepted or not
+
+  function clickShape(el){
+    // A coarse, class-name-FREE signature - obfuscated hashes ("mwoq") change
+    // on every deploy and would never repeat-match anyway. Position bucket +
+    // tag + role + a rough text-length bucket is enough to notice "the user
+    // keeps clicking the same KIND of thing in the same PLACE".
+    var r; try { r = el.getBoundingClientRect(); } catch(e){ r = { left: 0, top: 0 }; }
+    var col = Math.min(Math.max(Math.floor((r.left || 0) / (window.innerWidth / 3)), 0), 2);
+    var row = Math.min(Math.max(Math.floor((r.top || 0) / (window.innerHeight / 3)), 0), 2);
+    var role = (el.getAttribute && (el.getAttribute('role') || el.getAttribute('aria-label'))) || '';
+    var txt = (el.innerText || el.textContent || '').trim();
+    return [el.tagName.toLowerCase(), role.slice(0, 24), col + ',' + row,
+            txt.length > 40 ? 'long' : 'short'].join('|');
+  }
+
+  function noteWorkflowClick(el){
+    if (Date.now() < WF.cooldownUntil || WF.badge) return;
+    if (el.closest && (el.closest('#__flavor_mascot__') || el.closest('#__flavor_panel__')
+                       || el.closest('#__flavor_wf_badge__'))) return;
+    var now = Date.now();
+    WF.clicks = WF.clicks.filter(function(c){ return now - c.t < WF_WINDOW; });
+    var shape = clickShape(el);
+    WF.clicks.push({ shape: shape, t: now, el: el });
+    var matching = WF.clicks.filter(function(c){ return c.shape === shape; });
+    if (matching.length >= WF_CLICK_REPEATS) {
+      offerWorkflow('click', matching.map(function(c){ return describeEl(c.el); }));
+      WF.clicks = [];
+    }
+  }
+
+  function noteWorkflowScroll(){
+    if (Date.now() < WF.cooldownUntil || WF.badge) return;
+    var doc = document.documentElement;
+    var atBottom = (window.innerHeight + window.scrollY) >= (doc.scrollHeight - 60);
+    if (!atBottom) return;
+    var now = Date.now();
+    WF.scrolls = WF.scrolls.filter(function(s){ return now - s.t < WF_WINDOW; });
+    var last = WF.scrolls[WF.scrolls.length - 1];
+    if (last && now - last.t < 800) return;   // one "hit bottom" per scroll burst
+    WF.scrolls.push({ t: now });
+    if (WF.scrolls.length >= WF_SCROLL_REPEATS) {
+      offerWorkflow('scroll', { direction: 'down', hits: WF.scrolls.length,
+                                pageHeight: doc.scrollHeight });
+      WF.scrolls = [];
+    }
+  }
+
+  function offerWorkflow(kind, evidence){
+    if (WF.badge) return;
+    WF.cooldownUntil = Date.now() + WF_COOLDOWN;
+
+    var b = document.createElement('div');
+    b.id = '__flavor_wf_badge__';
+    b.textContent = '⚡ automate this?';
+    b.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:auto;cursor:pointer;'
+      + 'background:linear-gradient(100deg,#7b2ff7,#ff8fe0);color:#fff;'
+      + 'font:700 11.5px Quicksand,-apple-system,sans-serif;padding:5px 10px;border-radius:999px;'
+      + 'box-shadow:0 6px 18px rgba(0,0,0,.35);opacity:0;'
+      + 'transform:translate(14px,14px) scale(.9);transition:opacity .2s,transform .2s;white-space:nowrap;';
+    document.body.appendChild(b);
+    WF.badge = b;
+
+    function place(x, y){ b.style.left = x + 'px'; b.style.top = y + 'px'; }
+    var lastXY = [window.innerWidth / 2, window.innerHeight / 2];
+    function onMove(e){ lastXY = [e.clientX, e.clientY]; place(e.clientX, e.clientY); }
+    document.addEventListener('mousemove', onMove, true);
+    place(lastXY[0], lastXY[1]);
+    void b.offsetWidth;
+    b.style.opacity = '1'; b.style.transform = 'translate(14px,14px) scale(1)';
+
+    var prevCursor = document.documentElement.style.cursor;
+    document.documentElement.style.cursor = 'pointer';   // visible hint even off to the side
+
+    var dismissed = false;
+    function cleanup(){
+      if (dismissed) return; dismissed = true;
+      document.removeEventListener('mousemove', onMove, true);
+      document.documentElement.style.cursor = prevCursor;
+      if (b.parentNode) b.parentNode.removeChild(b);
+      WF.badge = null;
+    }
+    var timer = setTimeout(cleanup, 6000);   // ignored -> fades, never nags
+    b.onclick = function(e){
+      e.stopPropagation(); e.preventDefault();
+      clearTimeout(timer); cleanup();
+      startWorkflowHandoff(kind, evidence);
+    };
+  }
+
+  function startWorkflowHandoff(kind, evidence){
+    panelView = 'ai';
+    if (!panelOpen) togglePanel(); else renderPanel();
+    aiState.busy = true; aiState.lastError = null;
+    renderPanel();
+    livePageReport(siteKey(), function(report){
+      fetch(GENERATE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          domain: siteKey(), kind: 'automation', workflowKind: kind, evidence: evidence,
+          page: pageSnapshot(), pageProbe: report
+        })
+      })
+        .then(function(r){ return r.json(); })
+        .then(function(gen){
+          aiState.busy = false;
+          if (!gen || gen.error) {
+            aiState.lastError = (gen && gen.error) || 'could not automate this';
+            renderPanel();
+            return;
+          }
+          applyAndVerify(gen.code, function(v){
+            reportObservation(siteKey(), v.probe);
+            var cf = { id: 'wf_' + Date.now(), name: gen.name || ('Auto ' + kind),
+                      code: gen.code, on: true, generated: true, automation: true,
+                      domain: siteKey(), messages: [] };
+            var list = allCustomFlavors(); list.push(cf); saveCustomFlavors(list);
+            renderPanel();
+          });
+        })
+        .catch(function(){
+          aiState.busy = false; aiState.lastError = 'network error'; renderPanel();
+        });
+    });
+  }
+
+  function armWorkflowDetector(){
+    document.addEventListener('click', function(e){
+      if (e.isTrusted && e.target) noteWorkflowClick(e.target);
+    }, true);
+    document.addEventListener('scroll', function(){ noteWorkflowScroll(); }, true);
+  }
+
   // ---- element picker / "mark all" ----------------------------------
   var PICK_STYLE_ID = '__flavor_pick_style__';
   function ensurePickStyles(){
@@ -2238,6 +2387,7 @@ function flavorHub(){
   });
 
   armSuggestions();
+  armWorkflowDetector();
 
   window.__flavorHub__ = { togglePanel: togglePanel, flavors: FLAVORS,
                            analyzeRegions: analyzeRegions,
