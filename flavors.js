@@ -45,7 +45,7 @@ function flavorHub(){
         "ytd-searchbox,#search-form,#container.ytd-searchbox{border-radius:999px!important;border:2px solid #c86dfc!important;background:#2a1b45!important;}" +
         "a#video-title,#video-title,ytd-video-renderer #video-title,ytd-rich-grid-media #video-title," +
         "h3.ytLockupMetadataViewModelHeadingReset,.ytLockupMetadataViewModelTitle{font-family:'Baloo 2','Comic Sans MS',cursive!important;color:#f5e9ff!important;font-weight:700!important;}" +
-        "ytd-thumbnail,yt-thumbnail-view-model{position:relative!important;border-radius:28px!important;overflow:hidden!important;border:3px solid #c86dfc!important;box-shadow:0 0 0 2px #1c1230,0 6px 20px rgba(123,47,247,.55)!important;transition:transform .18s ease!important;display:block!important;}" +
+        "ytd-thumbnail,yt-thumbnail-view-model,.ytThumbnailViewModelImage{position:relative!important;border-radius:28px!important;overflow:hidden!important;border:3px solid #c86dfc!important;box-shadow:0 0 0 2px #1c1230,0 6px 20px rgba(123,47,247,.55)!important;transition:transform .18s ease!important;display:block!important;}" +
         "ytd-thumbnail::after,yt-thumbnail-view-model::after{content:'\\1F338';position:absolute!important;top:6px!important;left:6px!important;font-size:18px!important;z-index:5!important;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))!important;pointer-events:none!important;}" +
         "ytd-thumbnail:hover,yt-thumbnail-view-model:hover{transform:scale(1.035) rotate(-.4deg)!important;box-shadow:0 0 0 2px #1c1230,0 10px 28px rgba(200,109,252,.75)!important;}" +
         "yt-lockup-metadata-view-model a[href^='/@']{color:#e6b8ff!important;}" +
@@ -157,7 +157,13 @@ function flavorHub(){
       var navigating = false;
       function next(){
         if (navigating) return;
-        var link = document.querySelector('ytd-compact-autoplay-renderer a#thumbnail, ytd-watch-next-secondary-results-renderer a#thumbnail, #related a#thumbnail, #secondary a#thumbnail[href*="watch?v="], #secondary a[href*="watch?v="]');
+        var link = document.querySelector(
+          '#secondary a.ytLockupViewModelContentImage[href*="watch?v="], ' +
+          '#related a.ytLockupViewModelContentImage[href*="watch?v="], ' +
+          '#secondary yt-lockup-view-model a[href*="watch?v="], ' +
+          'a.ytLockupViewModelContentImage[href*="watch?v="], ' +
+          '#secondary a[href*="watch?v="], ' +
+          '#secondary a#thumbnail[href*="watch?v="], #related a#thumbnail');
         if (!link) { hint.textContent = 'no next video found in the sidebar yet'; hint.style.opacity = '.75'; setTimeout(function(){ hint.style.opacity = '0'; }, 2000); return; }
         navigating = true;
         link.click();
@@ -226,8 +232,9 @@ function flavorHub(){
       if (self.isScrollOn()) { self.exitScroll(); return; }
       if (self.canScroll()) { self.enterScroll(); return; }
       var link = document.querySelector(
-        'a#thumbnail[href*="watch?v="], a.ytLockupViewModelContentImage[href*="watch?v="], ' +
-        'a#video-title[href*="watch?v="], a[href*="/watch?v="]'
+        'a.ytLockupViewModelContentImage[href*="watch?v="], ' +
+        'yt-lockup-view-model a[href*="watch?v="], ' +
+        'a#thumbnail[href*="watch?v="], a#video-title[href*="watch?v="], a[href*="/watch?v="]'
       );
       if (!link) {
         alert('No videos found on this page yet — scroll the feed a bit first, then try again.');
@@ -365,8 +372,13 @@ function flavorHub(){
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid #3a2a5c;gap:8px;';
     var label = document.createElement('span');
-    label.textContent = cf.name;
-    label.style.cssText = 'font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
+    label.textContent = cf.generated ? ('✨ ' + cf.name) : cf.name;
+    label.style.cssText = 'font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;'
+      + (cf.generated ? 'cursor:pointer;text-decoration:underline dotted rgba(200,109,252,.6);text-underline-offset:3px;' : '');
+    if (cf.generated) {
+      label.title = 'Chat to change this flavor';
+      label.onclick = function(){ aiState.chatFor = cf.id; panelView = 'chat'; renderPanel(); };
+    }
     var controls = document.createElement('div');
     controls.style.cssText = 'display:flex;align-items:center;gap:6px;flex-shrink:0;';
     var sw = document.createElement('button');
@@ -418,9 +430,11 @@ function flavorHub(){
   function buildToolbarRow(){
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:6px;margin-top:12px;padding-top:10px;border-top:1px solid #3a2a5c;';
+    var aiBtn = smallBtn('✨ AI', function(){ panelView = 'ai'; renderPanel(); });
     var addBtn = smallBtn('+ Add', function(){ panelView = 'add'; renderPanel(); });
     var exportBtn = smallBtn('Export', function(){ doExport(exportBtn); });
     var importBtn = smallBtn('Import', function(){ panelView = 'import'; renderPanel(); });
+    row.appendChild(aiBtn);
     row.appendChild(addBtn);
     row.appendChild(exportBtn);
     row.appendChild(importBtn);
@@ -522,10 +536,442 @@ function flavorHub(){
     panelEl.appendChild(btnRow);
   }
 
+  // ===================================================================
+  //  AI flavor generation
+  //  Domain must exist in the flavor memory before we let the model near
+  //  it - a generated flavor is only as good as the verified selectors
+  //  we can hand the model. No memory => request flow, not generation.
+  // ===================================================================
+
+  var API_BASE = 'https://flavors.waleeds.world';
+  var MEMORY_INDEX_URL = API_BASE + '/memory/index.json';
+  var GENERATE_URL = API_BASE + '/api/generate';
+  var REQUEST_URL = API_BASE + '/api/request';
+
+  var aiState = {
+    memoryIndex: null,      // null = not fetched, [] = fetched empty
+    memoryError: null,
+    picked: [],             // selectors the user pointed at
+    recording: null,        // {steps:[...], startedAt}
+    recorder: null,         // teardown fn while recording
+    picker: null,           // teardown fn while picking
+    busy: false,
+    lastError: null,
+    chatFor: null           // custom-flavor id being refined
+  };
+
+  function siteKey(){ return location.hostname.replace(/^www\./, '').toLowerCase(); }
+
+  function fetchMemoryIndex(cb){
+    if (aiState.memoryIndex) { cb(aiState.memoryIndex); return; }
+    fetch(MEMORY_INDEX_URL + '?_=' + Date.now())
+      .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(j){
+        aiState.memoryIndex = (j && j.domains) || [];
+        aiState.memoryError = null;
+        cb(aiState.memoryIndex);
+      })
+      .catch(function(e){
+        // CSP connect-src can block this outright on strict sites.
+        aiState.memoryError = e.message;
+        aiState.memoryIndex = [];
+        cb([]);
+      });
+  }
+
+  function memoryEntry(){
+    var key = siteKey();
+    return (aiState.memoryIndex || []).filter(function(d){
+      return d.domain === key || (d.aliases || []).indexOf(key) !== -1;
+    })[0] || null;
+  }
+
+  // ---- robust-ish selector for an element the user clicked -----------
+  function cssPathFor(el){
+    if (!el || el === document.body) return 'body';
+    if (el.id && /^[A-Za-z][\w-]*$/.test(el.id)) return '#' + el.id;
+    var parts = [], node = el, depth = 0;
+    while (node && node.nodeType === 1 && depth < 5 && node !== document.body) {
+      var seg = node.tagName.toLowerCase();
+      var cls = (typeof node.className === 'string' ? node.className : '').trim();
+      if (cls) {
+        var good = cls.split(/\s+/).filter(function(c){
+          return /^[A-Za-z][\w-]*$/.test(c) && !/^(ng|is|has)-/.test(c) && c.length < 40;
+        }).slice(0, 2);
+        if (good.length) seg += '.' + good.join('.');
+      }
+      if (node.id && /^[A-Za-z][\w-]*$/.test(node.id)) { parts.unshift('#' + node.id); break; }
+      var par = node.parentElement;
+      if (par) {
+        var same = [].slice.call(par.children).filter(function(c){ return c.tagName === node.tagName; });
+        if (same.length > 1) seg += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
+      }
+      parts.unshift(seg);
+      node = node.parentElement; depth++;
+    }
+    return parts.join(' > ');
+  }
+
+  function describeEl(el){
+    var txt = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    return {
+      selector: cssPathFor(el),
+      tag: el.tagName.toLowerCase(),
+      text: txt,
+      matches: (function(){ try { return document.querySelectorAll(cssPathFor(el)).length; } catch(e){ return 0; } })()
+    };
+  }
+
+  // ---- element picker / "mark all" ----------------------------------
+  var PICK_STYLE_ID = '__flavor_pick_style__';
+  function ensurePickStyles(){
+    if (document.getElementById(PICK_STYLE_ID)) return;
+    var st = document.createElement('style');
+    st.id = PICK_STYLE_ID;
+    st.textContent =
+      '.__flavor_markall__ *:not(#__flavor_mascot__):not(#__flavor_panel__):not(#__flavor_panel__ *){outline:1px dashed rgba(200,109,252,.35)!important;outline-offset:-1px!important;}' +
+      '.__flavor_pick_hot__{outline:3px solid #ff8fe0!important;outline-offset:-1px!important;background:rgba(255,143,224,.12)!important;cursor:crosshair!important;}';
+    document.head.appendChild(st);
+  }
+
+  function startPicker(onPick, markAll){
+    stopPicker();
+    ensurePickStyles();
+    if (markAll) document.documentElement.classList.add('__flavor_markall__');
+    var hot = null;
+    function inUI(el){ return el.closest && (el.closest('#__flavor_mascot__') || el.closest('#__flavor_panel__')); }
+    function over(e){
+      var el = e.target;
+      if (!el || inUI(el)) return;
+      if (hot) hot.classList.remove('__flavor_pick_hot__');
+      hot = el; hot.classList.add('__flavor_pick_hot__');
+    }
+    function click(e){
+      var el = e.target;
+      if (!el || inUI(el)) return;
+      e.preventDefault(); e.stopPropagation();
+      onPick(describeEl(el));
+    }
+    document.addEventListener('mouseover', over, true);
+    document.addEventListener('click', click, true);
+    aiState.picker = function(){
+      document.removeEventListener('mouseover', over, true);
+      document.removeEventListener('click', click, true);
+      if (hot) hot.classList.remove('__flavor_pick_hot__');
+      document.documentElement.classList.remove('__flavor_markall__');
+    };
+  }
+  function stopPicker(){ if (aiState.picker) { aiState.picker(); aiState.picker = null; } }
+
+  // ---- record mode ---------------------------------------------------
+  function startRecording(onStep){
+    stopRecording();
+    ensurePickStyles();
+    document.documentElement.classList.add('__flavor_markall__');
+    aiState.recording = { steps: [], startedAt: Date.now() };
+    function onClick(e){
+      var el = e.target;
+      if (!el || (el.closest && (el.closest('#__flavor_mascot__') || el.closest('#__flavor_panel__')))) return;
+      // observe only - never swallow the user's real click
+      var d = describeEl(el);
+      d.t = Date.now() - aiState.recording.startedAt;
+      d.url = location.href;
+      aiState.recording.steps.push(d);
+      if (onStep) onStep(aiState.recording);
+    }
+    document.addEventListener('click', onClick, true);
+    aiState.recorder = function(){
+      document.removeEventListener('click', onClick, true);
+      document.documentElement.classList.remove('__flavor_markall__');
+    };
+  }
+  function stopRecording(){ if (aiState.recorder) { aiState.recorder(); aiState.recorder = null; } }
+
+  function pageSnapshot(){
+    var tags = {};
+    document.querySelectorAll('*').forEach(function(el){
+      var t = el.tagName.toLowerCase();
+      if (t.indexOf('-') !== -1) tags[t] = (tags[t] || 0) + 1;
+    });
+    var top = Object.keys(tags).map(function(k){ return [k, tags[k]]; })
+      .sort(function(a, b){ return b[1] - a[1]; }).slice(0, 30)
+      .map(function(x){ return x[0] + ':' + x[1]; });
+    return { url: location.href, title: document.title, components: top };
+  }
+
+  // ---- the generator call -------------------------------------------
+  function callGenerator(payload, cb){
+    aiState.busy = true; aiState.lastError = null;
+    renderPanel();
+    fetch(GENERATE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+      .then(function(r){
+        return r.json().then(function(j){
+          if (!r.ok) throw new Error(j && j.error ? j.error : 'HTTP ' + r.status);
+          return j;
+        });
+      })
+      .then(function(j){ aiState.busy = false; cb(null, j); })
+      .catch(function(e){ aiState.busy = false; aiState.lastError = e.message; cb(e); });
+  }
+
+  function saveGenerated(result, prompt, existingId){
+    var list = allCustomFlavors();
+    var cf;
+    if (existingId) {
+      cf = list.filter(function(f){ return f.id === existingId; })[0];
+    }
+    if (!cf) {
+      cf = {
+        id: 'cf_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+        name: result.name || 'AI flavor',
+        site: siteKey(),
+        on: false,
+        generated: true,
+        domain: siteKey(),
+        messages: []
+      };
+      list.push(cf);
+    }
+    cf.code = result.code;
+    cf.notes = result.notes || '';
+    if (result.name) cf.name = result.name;
+    cf.messages = (cf.messages || []).concat([
+      { role: 'user', content: prompt },
+      { role: 'assistant', content: result.notes || 'Updated the flavor.' }
+    ]);
+    saveCustomFlavors(list);
+    return cf;
+  }
+
+  // ---- views ---------------------------------------------------------
+  function aiHeader(titleText, backTo){
+    var wrap = document.createElement('div');
+    var t = document.createElement('div');
+    t.textContent = titleText;
+    t.style.cssText = 'font-family:"Baloo 2",cursive;font-weight:700;font-size:16px;margin-bottom:8px;color:#f5e9ff;';
+    wrap.appendChild(t);
+    return wrap;
+  }
+
+  function chipRow(items, onRemove){
+    var box = document.createElement('div');
+    box.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin:6px 0;';
+    items.forEach(function(it, i){
+      var c = document.createElement('span');
+      c.textContent = (it.text ? it.text.slice(0, 18) : it.tag) + ' ✕';
+      c.title = it.selector + '  (' + it.matches + ' matches)';
+      c.style.cssText = 'font-size:10px;background:#3a2a5c;color:#f5e9ff;padding:3px 7px;border-radius:999px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      c.onclick = function(){ onRemove(i); };
+      box.appendChild(c);
+    });
+    return box;
+  }
+
+  function renderAIView(){
+    panelEl.replaceChildren();
+    panelEl.appendChild(aiHeader('✨ Create a flavor'));
+
+    if (aiState.memoryIndex === null) {
+      var loading = document.createElement('div');
+      loading.textContent = 'Checking flavor memory…';
+      loading.style.cssText = 'font-size:12px;color:#caa6f5;padding:8px 0;';
+      panelEl.appendChild(loading);
+      fetchMemoryIndex(function(){ renderPanel(); });
+      panelEl.appendChild(smallBtn('Cancel', function(){ panelView = 'main'; renderPanel(); }));
+      return;
+    }
+
+    var entry = memoryEntry();
+    var site = document.createElement('div');
+    site.textContent = siteKey();
+    site.style.cssText = 'font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#caa6f5;margin-bottom:6px;';
+    panelEl.appendChild(site);
+
+    if (!entry) {
+      // Not in memory: we have no verified selectors, so generating would be guesswork.
+      var no = document.createElement('div');
+      no.style.cssText = 'font-size:12px;color:#f5e9ff;line-height:1.5;margin-bottom:8px;';
+      no.textContent = aiState.memoryError
+        ? 'Could not reach flavor memory (' + aiState.memoryError + '). This site may block it.'
+        : 'No flavor memory for this site yet, so the AI has no verified elements to build against. Send a request and it can be mapped.';
+      panelEl.appendChild(no);
+      var reqBtn = smallBtn('📨 Request this site', function(){
+        fetch(REQUEST_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain: siteKey(), page: pageSnapshot() })
+        }).then(function(){ alert('Request sent for ' + siteKey() + '.'); })
+          .catch(function(e){ alert('Could not send request: ' + e.message); });
+      });
+      panelEl.appendChild(reqBtn);
+      panelEl.appendChild(smallBtn('Cancel', function(){ panelView = 'main'; renderPanel(); }));
+      return;
+    }
+
+    var ok = document.createElement('div');
+    ok.textContent = '✅ ' + (entry.elements || '?') + ' verified elements in memory';
+    ok.style.cssText = 'font-size:11px;color:#9be8a0;margin-bottom:8px;';
+    panelEl.appendChild(ok);
+
+    var ta = document.createElement('textarea');
+    ta.placeholder = 'e.g. show me emails in a tiktok format - as I scroll, show me a new email';
+    ta.style.cssText = 'width:100%;box-sizing:border-box;height:66px;background:#2a1b45;color:#f5e9ff;border:1px solid #3a2a5c;border-radius:10px;padding:8px;font-size:12px;font-family:inherit;resize:vertical;';
+    panelEl.appendChild(ta);
+
+    if (aiState.picked.length) {
+      panelEl.appendChild(chipRow(aiState.picked, function(i){
+        aiState.picked.splice(i, 1); renderPanel();
+      }));
+    }
+
+    var tools = document.createElement('div');
+    tools.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;';
+    tools.appendChild(smallBtn(aiState.picker ? '✓ Done picking' : '🎯 Select elements', function(){
+      if (aiState.picker) { stopPicker(); }
+      else {
+        startPicker(function(d){ aiState.picked.push(d); renderPanel(); }, true);
+      }
+      renderPanel();
+    }));
+    var recLabel = aiState.recorder
+      ? '⏹ Stop (' + (aiState.recording ? aiState.recording.steps.length : 0) + ')'
+      : '⏺ Record';
+    tools.appendChild(smallBtn(recLabel, function(){
+      if (aiState.recorder) stopRecording();
+      else startRecording(function(){ renderPanel(); });
+      renderPanel();
+    }));
+    panelEl.appendChild(tools);
+
+    if (aiState.recording && aiState.recording.steps.length) {
+      var rec = document.createElement('div');
+      rec.textContent = '⏺ ' + aiState.recording.steps.length + ' steps recorded';
+      rec.style.cssText = 'font-size:11px;color:#ff8fe0;margin-bottom:6px;';
+      panelEl.appendChild(rec);
+    }
+
+    if (aiState.lastError) {
+      var err = document.createElement('div');
+      err.textContent = '⚠️ ' + aiState.lastError;
+      err.style.cssText = 'font-size:11px;color:#ff9b9b;margin:6px 0;line-height:1.4;';
+      panelEl.appendChild(err);
+    }
+
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;margin-top:6px;';
+    var genBtn = smallBtn(aiState.busy ? '⏳ Generating…' : '✨ Generate', function(){
+      var prompt = ta.value.trim();
+      if (!prompt) { ta.focus(); return; }
+      if (aiState.busy) return;
+      stopPicker(); stopRecording();
+      callGenerator({
+        domain: siteKey(),
+        prompt: prompt,
+        elements: aiState.picked,
+        recording: aiState.recording,
+        page: pageSnapshot(),
+        history: []
+      }, function(e, res){
+        if (e) { renderPanel(); return; }
+        var cf = saveGenerated(res, prompt, null);
+        aiState.picked = []; aiState.recording = null;
+        aiState.chatFor = cf.id;
+        panelView = 'main';
+        renderPanel();
+        bounceMascot();
+      });
+    });
+    row.appendChild(genBtn);
+    row.appendChild(smallBtn('Cancel', function(){
+      stopPicker(); stopRecording();
+      panelView = 'main'; renderPanel();
+    }));
+    panelEl.appendChild(row);
+  }
+
+  function renderChatView(){
+    panelEl.replaceChildren();
+    var cf = allCustomFlavors().filter(function(f){ return f.id === aiState.chatFor; })[0];
+    if (!cf) { panelView = 'main'; renderPanel(); return; }
+
+    panelEl.appendChild(aiHeader('💬 ' + cf.name));
+
+    var log = document.createElement('div');
+    log.style.cssText = 'max-height:150px;overflow:auto;margin-bottom:8px;display:flex;flex-direction:column;gap:5px;';
+    (cf.messages || []).forEach(function(m){
+      var b = document.createElement('div');
+      b.textContent = m.content;
+      b.style.cssText = 'font-size:11px;line-height:1.45;padding:6px 8px;border-radius:9px;max-width:92%;' +
+        (m.role === 'user'
+          ? 'align-self:flex-end;background:#7b2ff7;color:#fff;'
+          : 'align-self:flex-start;background:#2a1b45;color:#f5e9ff;');
+      log.appendChild(b);
+    });
+    panelEl.appendChild(log);
+
+    var ta = document.createElement('textarea');
+    ta.placeholder = 'Change something… e.g. make the cards rounder';
+    ta.style.cssText = 'width:100%;box-sizing:border-box;height:52px;background:#2a1b45;color:#f5e9ff;border:1px solid #3a2a5c;border-radius:10px;padding:8px;font-size:12px;font-family:inherit;resize:vertical;';
+    panelEl.appendChild(ta);
+
+    if (aiState.picked.length) {
+      panelEl.appendChild(chipRow(aiState.picked, function(i){
+        aiState.picked.splice(i, 1); renderPanel();
+      }));
+    }
+
+    var tools = document.createElement('div');
+    tools.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;';
+    tools.appendChild(smallBtn(aiState.picker ? '✓ Done picking' : '🎯 Select elements', function(){
+      if (aiState.picker) stopPicker();
+      else startPicker(function(d){ aiState.picked.push(d); renderPanel(); }, true);
+      renderPanel();
+    }));
+    panelEl.appendChild(tools);
+
+    if (aiState.lastError) {
+      var err = document.createElement('div');
+      err.textContent = '⚠️ ' + aiState.lastError;
+      err.style.cssText = 'font-size:11px;color:#ff9b9b;margin:6px 0;';
+      panelEl.appendChild(err);
+    }
+
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;margin-top:6px;';
+    row.appendChild(smallBtn(aiState.busy ? '⏳ Thinking…' : 'Send', function(){
+      var prompt = ta.value.trim();
+      if (!prompt || aiState.busy) return;
+      stopPicker();
+      callGenerator({
+        domain: cf.domain || siteKey(),
+        prompt: prompt,
+        elements: aiState.picked,
+        page: pageSnapshot(),
+        currentCode: cf.code,
+        history: cf.messages || []
+      }, function(e, res){
+        if (e) { renderPanel(); return; }
+        saveGenerated(res, prompt, cf.id);
+        aiState.picked = [];
+        renderPanel();
+      });
+    }));
+    row.appendChild(smallBtn('Back', function(){
+      stopPicker();
+      panelView = 'main'; renderPanel();
+    }));
+    panelEl.appendChild(row);
+  }
+
   function renderPanel(){
     ensureFont();
     if (panelView === 'add') { renderAddView(); return; }
     if (panelView === 'import') { renderImportView(); return; }
+    if (panelView === 'ai') { renderAIView(); return; }
+    if (panelView === 'chat') { renderChatView(); return; }
 
     panelEl.replaceChildren();
 
@@ -584,7 +1030,7 @@ function flavorHub(){
     panelEl.appendChild(buildToolbarRow());
   }
 
-  var EDGE_HIDE = 40, EDGE_PEEK = 4, EDGE_SNAP = 90;
+  var EDGE_HIDE = 40, EDGE_PEEK = 20, EDGE_SNAP = 90;
   var savedState = prefs.mascotState || { edge: 'top', along: null };
   var edge = ('edge' in savedState) ? savedState.edge : 'top';
   var alongPos = savedState.along;
@@ -663,10 +1109,13 @@ function flavorHub(){
     var deg = (edge != null && EDGE_ROTATE[edge] != null) ? EDGE_ROTATE[edge] : 0;
     mascotStyleTag.textContent =
       '@keyframes __flavor_bob__{0%,100%{transform:rotate(' + deg + 'deg) translateY(0)}50%{transform:rotate(' + deg + 'deg) translateY(3px)}}' +
-      '@keyframes __flavor_bounce__{0%{transform:rotate(' + deg + 'deg) scale(1)}30%{transform:rotate(' + (deg - 6) + 'deg) scale(1.2)}55%{transform:rotate(' + (deg + 4) + 'deg) scale(.92)}100%{transform:rotate(' + deg + 'deg) scale(1)}}' +
+      '@keyframes __flavor_bounce__{0%{transform:rotate(' + deg + 'deg) scale(1)}30%{transform:rotate(' + (deg - 4) + 'deg) scale(1.08)}55%{transform:rotate(' + (deg + 3) + 'deg) scale(.96)}100%{transform:rotate(' + deg + 'deg) scale(1)}}' +
       '#__flavor_mascot__{animation:__flavor_bob__ 2.6s ease-in-out infinite;}' +
       '#__flavor_mascot__.__flavor_bounce__{animation:__flavor_bounce__ .5s ease;}' +
-      '#__flavor_mascot__.__flavor_dragging__{animation:none;transition:none;cursor:grabbing;transform:none;}';
+      '#__flavor_mascot__.__flavor_dragging__{animation:none;transition:none;cursor:grabbing;transform:none;}' +
+      '#__flavor_dragshield__{position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483646;background:rgba(20,12,36,.42);cursor:grabbing;opacity:0;transition:opacity .15s ease;pointer-events:auto;}' +
+      '#__flavor_dragshield__.__on__{opacity:1;}' +
+      'html.__flavor_nosel__,html.__flavor_nosel__ *{user-select:none!important;-webkit-user-select:none!important;-moz-user-select:none!important;-ms-user-select:none!important;-webkit-touch-callout:none!important;}';
   }
 
   function buildMascot(){
@@ -695,10 +1144,41 @@ function flavorHub(){
     mascotEl.onmouseenter = function(){ mascotHovering = true; applyEdgeState('peek'); };
     mascotEl.onmouseleave = function(){ mascotHovering = false; if (!panelOpen) applyEdgeState('rest'); };
 
+    // Safari starts a text selection on the page as soon as the pointer moves outside
+    // the mascot. A full-viewport shield swallows the pointer (nothing left to select)
+    // and doubles as the dimmed "locked" backdrop while dragging.
+    var shieldEl = null;
+    function dragShield(on){
+      if (on) {
+        if (!shieldEl) {
+          shieldEl = document.createElement('div');
+          shieldEl.id = '__flavor_dragshield__';
+          document.body.appendChild(shieldEl);
+        }
+        document.documentElement.classList.add('__flavor_nosel__');
+        try { var sel = window.getSelection(); if (sel) sel.removeAllRanges(); } catch(e){}
+        void shieldEl.offsetWidth;            // force a reflow so the fade actually runs
+        shieldEl.classList.add('__on__');
+      } else {
+        document.documentElement.classList.remove('__flavor_nosel__');
+        if (shieldEl) {
+          shieldEl.classList.remove('__on__');
+          var el = shieldEl;
+          setTimeout(function(){ if (el && el.parentNode) el.parentNode.removeChild(el); }, 200);
+          shieldEl = null;
+        }
+      }
+    }
+
     var dragging = false, justDragged = false, startX, startY, startLeft, startTop, pointerId, lastNx, lastNy;
     mascotEl.addEventListener('pointerdown', function(e){
+      e.preventDefault();   // Safari: without this the page starts selecting text
       dragging = false;
       pointerId = e.pointerId;
+      // Capture immediately, not after the drag threshold: mouse pointer events stop
+      // routing here the moment the cursor leaves the mascot, so a fast flick would
+      // otherwise never start a drag at all.
+      try { mascotEl.setPointerCapture(pointerId); } catch(err){}
       startX = e.clientX;
       startY = e.clientY;
       var r = mascotEl.getBoundingClientRect();
@@ -714,7 +1194,7 @@ function flavorHub(){
         dragging = true;
         edge = null;
         mascotEl.classList.add('__flavor_dragging__');
-        mascotEl.setPointerCapture(pointerId);
+        dragShield(true);
       }
       if (dragging) {
         var w = mascotEl.offsetWidth, h = mascotEl.offsetHeight;
@@ -724,6 +1204,7 @@ function flavorHub(){
         mascotEl.style.top = lastNy + 'px';
         mascotEl.style.right = 'auto';
         if (panelOpen) positionPanelNearMascot();
+        try { var sel = window.getSelection(); if (sel && !sel.isCollapsed) sel.removeAllRanges(); } catch(e){}
       }
     });
     mascotEl.addEventListener('pointerup', function(e){
@@ -753,7 +1234,18 @@ function flavorHub(){
       }
       dragging = false;
       startX = null;
+      try { if (pointerId != null) mascotEl.releasePointerCapture(pointerId); } catch(err){}
+      dragShield(false);
     });
+    // an interrupted drag (alt-tab, context menu, iOS gesture) must not leave the
+    // page dimmed and unselectable
+    mascotEl.addEventListener('pointercancel', function(){
+      dragging = false; startX = null;
+      mascotEl.classList.remove('__flavor_dragging__');
+      dragShield(false);
+    });
+    window.addEventListener('blur', function(){ if (shieldEl) { dragging = false; startX = null;
+      mascotEl.classList.remove('__flavor_dragging__'); dragShield(false); } });
     mascotEl.onclick = function(){
       if (justDragged) return;
       togglePanel();

@@ -1,0 +1,14 @@
+{
+  "updated": "2026-09-19",
+  "domains": [
+    {
+      "domain": "youtube.com",
+      "aliases": ["m.youtube.com", "music.youtube.com"],
+      "file": "youtube.com.md",
+      "elements": 17,
+      "verified": "2026-09-19",
+      "coverage": "watch page verified; home feed unverified",
+      "existing_flavor": "fancy_yt"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+name = "flavors-api"
+main = "index.js"
+compatibility_date = "2026-09-01"
+
+# Serve the API from the same origin as flavors.js so the bookmarklet needs no
+# extra CSP allowance beyond the one it already uses.
+routes = [
+  { pattern = "flavors.waleeds.world/api/*", zone_name = "waleeds.world" }
+]
+
+# Optional: stores site requests. Create with
+#   npx wrangler kv namespace create FLAVOR_REQUESTS
+# then paste the id here and uncomment.
+# [[kv_namespaces]]
+# binding = "FLAVOR_REQUESTS"
+# id = "<id>"

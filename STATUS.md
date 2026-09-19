@@ -1,0 +1,27 @@
+# Flavors — open work
+
+Updated 2026-09-19. Status: ✅ done · 🟡 coded, not verified/deployed · ⬜ not started
+
+| # | Item | Status | Detail |
+|---|---|---|---|
+| **B1** | **CSP `connect-src` blocks the loader** | ⬜ | Bookmarklet `fetch()`es `flavors.js`; strict-CSP sites refuse it (`Refused to connect ... not in the connect-src directive`). `<script src>` is no escape — that's `script-src`, equally locked. **Fix:** hybrid loader — embed a full `flavorHub` copy in the bookmarklet, try fetch first for auto-update, fall back to embedded on failure. Reinstall only to refresh the fallback. |
+| **B2** | **Safari: dragging selects page text** | ✅ | `pointerdown` never called `preventDefault()`; nothing suppressed selection once the pointer left the mascot. **Done:** `e.preventDefault()`, full-viewport dim shield (`rgba(20,12,36,.42)`) that swallows the pointer, `user-select:none!important` on `html *` while dragging, selection cleared on move, plus `pointercancel`/`blur` recovery so an interrupted drag can't leave the page dimmed. **Verified on WebKit + Chromium:** 0 chars selected across a full-page drag, shield `rgba(20,12,36,0.42)`, `user-select:none` applied, nothing leaks after release. Also fixed: `setPointerCapture` now fires on `pointerdown`, not after the 6px threshold — a fast flick off the mascot used to abort the drag entirely. **Needs:** deploy. |
+| **B3** | Mascot peek overshoots, back seam visible | 🟡 | `EDGE_PEEK 4 → 20` (20px stays off-screen, only paws clear the edge). Bounce overshoot softened `scale 1.2 → 1.08`, rotate `6° → 4°`. **Needs:** deploy + eyeball. |
+| **B4** | YouTube Doom Scroll can't advance | 🟡 | All `a#thumbnail` variants return **0** — YouTube moved to lockup components. Verified replacement `a.ytLockupViewModelContentImage[href*="watch?v="]` (26) / `yt-lockup-view-model a[href*="watch?v="]` (52). Also dead: `a#video-title`, `#video-title`. **Needs:** patch `fancy_yt`. |
+| **B5** | Home-feed selectors unverified | ⬜ | Headless hit a signed-out state (0 video links). Run the diagnostic via Playwright **persistent context on the real Chrome profile** (Chrome must be closed, or copy the profile dir). |
+| **A1** | Flavor memory store | ✅ | `memory/youtube.com.md` written from verified data (element table + match counts, DEAD list, `--yt-spec-*` hooks, Trusted Types / `#columns` / fullscreen / SPA rules). `memory/index.json` written. **Needs:** deploy — `/memory/...` still 404s until pushed. |
+| **A2** | AI flavor generation (GLM 5.3) | 🟡 | `z-ai/glm-5.3` on OpenRouter ($0.91/M in, $2.86/M out, 1.3M ctx). **Key must stay server-side** — `flavors.js` is world-readable. `worker/index.js` + `wrangler.toml` written. **End-to-end verified on live YouTube:** generated `Focus Mode YouTube`, no banned sinks, no DEAD selectors, applies + toggles off clean, video stays visible, no page errors. **$0.0035/generation.** ⚠️ GLM 5.3 is a reasoning model — at `max_tokens:4000` it burned all 4000 on reasoning and returned `content:null`; fixed with `reasoning:{effort:'low'}` (`enabled:false` 400s) + `max_tokens:12000`. **Needs:** `wrangler deploy` + `wrangler secret put OPENROUTER_API_KEY`. |
+| **A3** | Domain gating | ✅ | Gated in BOTH places: client hides the prompt box, Worker returns 404 `needsRequest` without memory. Verified — an unknown domain falls through to the request flow, not generation. |
+| **A4** | Generated flavor → toggle | ✅ | Reuse the existing custom-flavor store (`prefs.customFlavors`, `runCustomFlavor`, `buildCustomToggleRow`); add `generated`, `domain`, `messages[]`. |
+| **A5** | Click flavor → chat to refine | ✅ | `renderChatView()` — per-flavor history, current code sent back so the model edits rather than restarts. Generated flavors show `✨` and a dotted underline; click the name to chat. |
+| **A6** | Element picker in chat | ✅ | Mark-all dashed outline over every element, hot-highlight on hover, click to add a chip. Selector built id-first then class/nth-of-type, with a live match count. Available in both the create and chat views. Smoke-tested on WebKit + Chromium. |
+| **A7** | Record mode | 🟡 | Records the click path (observe-only, never swallows the real click), highlights everything while armed, attaches the ordered steps to the generation prompt. **Not yet done:** suggesting actions to the user. |
+
+## Architecture facts (verified)
+
+- `flavors.waleeds.world` = **push-to-deploy**: deployed bytes == `HEAD` commit, built from
+  `github.com/Majboor/bookmarklet-flavors` via Cloudflare. Nothing needs to run locally; the
+  cloudflared tunnel on this Mac (PID 4740) is unrelated.
+- `serve.py` on :8899 is local preview only, not the origin.
+- Custom flavors already persist in `localStorage` and run via `new Function(cf.code)` — the
+  generated-flavor store is an extension of this, not a new mechanism.
