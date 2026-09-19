@@ -1006,6 +1006,23 @@ function flavorHub(){
     }));
     panelEl.appendChild(tools);
 
+    if (aiState.status) {
+      var cst = document.createElement('div');
+      cst.textContent = aiState.status;
+      cst.style.cssText = 'font-size:11px;color:#caa6f5;margin:6px 0;line-height:1.4;';
+      panelEl.appendChild(cst);
+    }
+
+    if (aiState.lastVerdict) {
+      var cvd = document.createElement('div');
+      cvd.textContent = aiState.lastVerdict;
+      cvd.style.cssText = 'font-size:11px;line-height:1.4;margin:6px 0;padding:6px 8px;border-radius:8px;'
+        + (aiState.lastVerdict.indexOf('✅') === 0
+            ? 'background:rgba(120,220,140,.12);color:#9be8a0;'
+            : 'background:rgba(255,140,140,.12);color:#ff9b9b;');
+      panelEl.appendChild(cvd);
+    }
+
     if (aiState.lastError) {
       var err = document.createElement('div');
       err.textContent = '⚠️ ' + aiState.lastError;
@@ -1019,18 +1036,42 @@ function flavorHub(){
       var prompt = ta.value.trim();
       if (!prompt || aiState.busy) return;
       stopPicker();
-      callGenerator({
+      aiState.busy = true;
+      // The old version is probably still applied. Undo it FIRST, otherwise the new
+      // code lands on top of the old styles and nothing looks like it changed -
+      // which reads to the user as "it replied but did nothing".
+      if (cf.on) {
+        try { runFlavorCode(cf.code); } catch(e){}
+        cf.on = false;
+      }
+      generateWithRepair({
         domain: cf.domain || siteKey(),
         prompt: prompt,
         elements: aiState.picked,
         page: pageSnapshot(),
         currentCode: cf.code,
         history: cf.messages || []
-      }, function(e, res){
-        if (e) { renderPanel(); return; }
-        saveGenerated(res, prompt, cf.id);
-        aiState.picked = [];
+      }, function(msg){
+        aiState.status = msg;
         renderPanel();
+      }, function(err, gen, verdict, attempts){
+        aiState.busy = false;
+        aiState.status = null;
+        if (err || !gen) {
+          aiState.lastError = (err && err.message) || 'could not update the flavor';
+          renderPanel();
+          return;
+        }
+        var saved = saveGenerated(gen, prompt, cf.id);
+        saved.on = !!(verdict && verdict.worked);
+        saved.verdict = verdict ? verdictLine(verdict) : null;
+        saveCustomFlavors(allCustomFlavors());
+        aiState.picked = [];
+        aiState.lastVerdict = (verdict ? verdictLine(verdict) : '')
+          + (attempts ? '  (after ' + attempts + ' self-repair'
+             + (attempts === 1 ? '' : 's') + ')' : '');
+        renderPanel();
+        bounceMascot();
       });
     }));
     row.appendChild(smallBtn('Back', function(){
@@ -1294,25 +1335,28 @@ function flavorHub(){
     var set = {};
     function add(s){
       if (!s) return;
-      s = String(s).replace(/\/\*[\s\S]*?\*\//g, '').trim();
+      s = String(s).replace(/\/\*[\s\S]*?\*\//g, '');
+      // A rule head sliced out of JS source often carries the string delimiter:
+      // "'#secondary" or "`\n#secondary". Strip those rather than rejecting the
+      // selector - rejecting them silently blinded the verifier to real changes.
+      s = s.replace(/^[\s'"`]+/, '').replace(/[\s'"`]+$/, '');
+      // Newlines are legal inside a descendant selector; collapse, don't reject.
+      s = s.replace(/[\s]+/g, ' ').trim();
       if (!s || s.length > 180) return;
       if (/^@/.test(s)) return;                       // @media / @keyframes
+      if (/[;{}]|=>/.test(s)) return;                 // definitely JS, not a selector
       if (/\b(function|return|var|let|const|if|else|for|while|typeof)\b/.test(s)) return;
       if (!/[#.\[a-zA-Z]/.test(s)) return;
-      if (/^\d/.test(s)) return;                      // keyframe stops: 0%, 50%
-      if (/%$/.test(s)) return;
-      // Reject fragments of JS source. Slicing a multi-line array literal used to
-      // yield things like "[\n  '#secondary", which were then reported to the model
-      // as invalid selectors IT had written - sending it chasing its own tail.
-      if (/['"`\n\r]/.test(s)) return;
-      var opens = (s.match(/\[/g) || []).length, closes = (s.match(/\]/g) || []).length;
-      if (opens !== closes) return;
-      var po = (s.match(/\(/g) || []).length, pc = (s.match(/\)/g) || []).length;
-      if (po !== pc) return;
-      // Must survive being parsed as an actual selector.
+      if (/^\d/.test(s) || /%$/.test(s)) return;      // keyframe stops: 0%, 50%
+      var ob = (s.match(/\[/g) || []).length, cb = (s.match(/\]/g) || []).length;
+      if (ob !== cb) return;
+      var op = (s.match(/\(/g) || []).length, cp = (s.match(/\)/g) || []).length;
+      if (op !== cp) return;
+      // The real gate: it must parse as an actual CSS selector.
       try { document.querySelector(s); } catch(e){ return; }
       set[s] = true;
     }
+
     // CSS rule heads: everything before a { ... } that has no nested braces
     var re = /([^{}();=]+)\{[^{}]*\}/g, m;
     while ((m = re.exec(code)) !== null) {
