@@ -45,7 +45,7 @@ function flavorHub(){
         "ytd-searchbox,#search-form,#container.ytd-searchbox{border-radius:999px!important;border:2px solid #c86dfc!important;background:#2a1b45!important;}" +
         "a#video-title,#video-title,ytd-video-renderer #video-title,ytd-rich-grid-media #video-title," +
         "h3.ytLockupMetadataViewModelHeadingReset,.ytLockupMetadataViewModelTitle{font-family:'Baloo 2','Comic Sans MS',cursive!important;color:#f5e9ff!important;font-weight:700!important;}" +
-        "ytd-thumbnail,yt-thumbnail-view-model,.ytThumbnailViewModelImage{position:relative!important;border-radius:28px!important;overflow:hidden!important;border:3px solid #c86dfc!important;box-shadow:0 0 0 2px #1c1230,0 6px 20px rgba(123,47,247,.55)!important;transition:transform .18s ease!important;display:block!important;}" +
+        "ytd-thumbnail,yt-thumbnail-view-model{position:relative!important;border-radius:28px!important;overflow:hidden!important;border:3px solid #c86dfc!important;box-shadow:0 0 0 2px #1c1230,0 6px 20px rgba(123,47,247,.55)!important;transition:transform .18s ease!important;display:block!important;}" +
         "ytd-thumbnail::after,yt-thumbnail-view-model::after{content:'\\1F338';position:absolute!important;top:6px!important;left:6px!important;font-size:18px!important;z-index:5!important;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))!important;pointer-events:none!important;}" +
         "ytd-thumbnail:hover,yt-thumbnail-view-model:hover{transform:scale(1.035) rotate(-.4deg)!important;box-shadow:0 0 0 2px #1c1230,0 10px 28px rgba(200,109,252,.75)!important;}" +
         "yt-lockup-metadata-view-model a[href^='/@']{color:#e6b8ff!important;}" +
@@ -557,7 +557,8 @@ function flavorHub(){
     picker: null,           // teardown fn while picking
     busy: false,
     lastError: null,
-    chatFor: null           // custom-flavor id being refined
+    chatFor: null,          // custom-flavor id being refined
+    pendingPrompt: null     // prefilled from an accepted suggestion
   };
 
   function siteKey(){ return location.hostname.replace(/^www\./, '').toLowerCase(); }
@@ -709,8 +710,22 @@ function flavorHub(){
       body: JSON.stringify(payload)
     })
       .then(function(r){
-        return r.json().then(function(j){
-          if (!r.ok) throw new Error(j && j.error ? j.error : 'HTTP ' + r.status);
+        // If the API isn't deployed the static host answers with a 404 HTML page,
+        // and parsing that as JSON throws a browser-specific message that tells
+        // the user nothing ("The string did not match the expected pattern" in
+        // Safari). Read as text and diagnose properly.
+        return r.text().then(function(body){
+          var j = null;
+          try { j = JSON.parse(body); } catch(e){}
+          if (!j) {
+            if (r.status === 404) {
+              throw new Error('Generator API is not deployed yet (404 from ' + GENERATE_URL + ').');
+            }
+            throw new Error('Generator returned ' + r.status + ' but not JSON: ' +
+                            body.slice(0, 80).replace(/\s+/g, ' '));
+          }
+          if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+          if (!j.code) throw new Error(j.error || 'Generator returned no code.');
           return j;
         });
       })
@@ -817,6 +832,7 @@ function flavorHub(){
     panelEl.appendChild(ok);
 
     var ta = document.createElement('textarea');
+    if (aiState.pendingPrompt) { ta.value = aiState.pendingPrompt; aiState.pendingPrompt = null; }
     ta.placeholder = 'e.g. show me emails in a tiktok format - as I scroll, show me a new email';
     ta.style.cssText = 'width:100%;box-sizing:border-box;height:66px;background:#2a1b45;color:#f5e9ff;border:1px solid #3a2a5c;border-radius:10px;padding:8px;font-size:12px;font-family:inherit;resize:vertical;';
     panelEl.appendChild(ta);
@@ -966,6 +982,184 @@ function flavorHub(){
     panelEl.appendChild(row);
   }
 
+  // ===================================================================
+  //  Proactive suggestions (jev)
+  //  We send region labels + geometry, never page content, and jev answers
+  //  small typed questions. The decision to speak at all is made here, by
+  //  thresholds we control - a model never decides to interrupt.
+  // ===================================================================
+
+  var SUGGEST_URL = API_BASE + '/api/suggest';
+  var SUGGEST_DELAY = 9000;      // let the page settle, and the user actually look at it
+  var SUGGEST_COOLDOWN = 6 * 60 * 60 * 1000;   // 6h per domain after a dismiss
+  var suggestState = { shown: false, bubble: null, timer: null };
+
+  // Class names are frequently obfuscated ("mwoq", "ytLockupViewModelHost"), so a
+  // label scraped from the DOM is often unusable in a sentence. We send evidence
+  // instead and let jev classify the region into a fixed vocabulary - the words
+  // the user reads come from OUR list, never from the page's markup.
+  function regionEvidence(el){
+    var heading = '';
+    var h = el.querySelector && el.querySelector('h1,h2,h3,[role=heading]');
+    if (h) heading = (h.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 70);
+    var aria = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '';
+    var text = (el.innerText || '').trim().replace(/\s+/g, ' ');
+    return {
+      heading: heading,
+      aria: aria.slice(0, 50),
+      role: (el.getAttribute && el.getAttribute('role')) || el.tagName.toLowerCase(),
+      id: (el.id || '').slice(0, 30),
+      sample: text.slice(0, 120),
+      words: text.split(' ').length
+    };
+  }
+
+  function analyzeRegions(){
+    var vw = window.innerWidth, vh = window.innerHeight, viewArea = vw * vh;
+    var out = [];
+    var all = document.querySelectorAll('div,section,aside,nav,main,article,ol,ul,form,table,[role]');
+    for (var i = 0; i < all.length && out.length < 90; i++) {
+      var el = all[i];
+      if (el.closest && (el.closest('#__flavor_mascot__') || el.closest('#__flavor_panel__'))) continue;
+      // player internals are overlay shells with no meaning to a person
+      if (el.closest && el.closest('#movie_player, video, .html5-video-player')) continue;
+      var r;
+      try { r = el.getBoundingClientRect(); } catch(e){ continue; }
+      if (r.width < 140 || r.height < 110) continue;
+      if (r.bottom < 0 || r.top > vh * 1.6) continue;
+      var area = (r.width * r.height) / viewArea;
+      if (area < 0.04 || area > 0.62) continue;
+      var st = window.getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden' || +st.opacity === 0) continue;
+      var txt = (el.innerText || '').trim();
+      var links = el.querySelectorAll('a').length;
+      // a region a person could name has words or links in it; empty shells do not
+      if (txt.length < 25 && links < 3) continue;
+      out.push({ el: el, area: Math.round(area * 100), links: links, repeats: el.children.length });
+    }
+    var kept = out.filter(function(c){
+      return !out.some(function(o){ return o !== c && c.el.contains(o.el); });
+    });
+    kept.sort(function(a, b){ return b.area - a.area; });
+    return kept.slice(0, 6).map(function(c){
+      var ev = regionEvidence(c.el);
+      return { selector: cssPathFor(c.el), area: c.area, links: c.links,
+               repeats: c.repeats, heading: ev.heading, aria: ev.aria,
+               role: ev.role, id: ev.id, sample: ev.sample, words: ev.words };
+    });
+  }
+
+  function suggestAllowed(){
+    if (suggestState.shown || panelOpen) return false;
+    var mem = prefs.suggestMuted || {};
+    var until = mem[siteKey()];
+    if (until && Date.now() < until) return false;
+    return true;
+  }
+
+  function muteSuggestions(ms){
+    prefs.suggestMuted = prefs.suggestMuted || {};
+    prefs.suggestMuted[siteKey()] = Date.now() + (ms || SUGGEST_COOLDOWN);
+    savePrefs(prefs);
+  }
+
+  function buildBubble(text, onYes, onNo){
+    var b = document.createElement('div');
+    b.id = '__flavor_bubble__';
+    b.style.cssText = 'position:fixed;z-index:2147483646;max-width:250px;background:linear-gradient(150deg,#3a1c66,#2a1b45);' +
+      'color:#f5e9ff;border:1px solid rgba(200,109,252,.45);border-radius:14px;padding:11px 12px 9px;' +
+      'font-family:Quicksand,-apple-system,sans-serif;font-size:12.5px;line-height:1.45;' +
+      'box-shadow:0 10px 30px rgba(0,0,0,.45),0 0 0 1px rgba(123,47,247,.25);' +
+      'opacity:0;transform:translateY(6px) scale(.97);transition:opacity .28s ease,transform .28s cubic-bezier(.34,1.56,.64,1);';
+    var msg = document.createElement('div');
+    msg.textContent = text;
+    msg.style.cssText = 'margin-bottom:9px;';
+    b.appendChild(msg);
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    var yes = document.createElement('button');
+    yes.textContent = 'Yes please';
+    yes.style.cssText = 'flex:1;border:none;border-radius:999px;padding:6px 10px;cursor:pointer;font-family:inherit;' +
+      'font-size:11.5px;font-weight:700;color:#fff;background:linear-gradient(100deg,#7b2ff7,#ff8fe0);';
+    var no = document.createElement('button');
+    no.textContent = 'Not now';
+    no.style.cssText = 'border:none;border-radius:999px;padding:6px 10px;cursor:pointer;font-family:inherit;' +
+      'font-size:11.5px;color:#caa6f5;background:#2a1b45;';
+    yes.onclick = onYes; no.onclick = onNo;
+    row.appendChild(yes); row.appendChild(no);
+    b.appendChild(row);
+    return b;
+  }
+
+  function positionBubble(b){
+    var r = mascotEl.getBoundingClientRect();
+    var w = b.offsetWidth || 250, h = b.offsetHeight || 90;
+    var left = r.left + r.width / 2 - w / 2;
+    var top = r.top - h - 12;
+    if (top < 8) top = r.bottom + 12;                       // flip under when near the top
+    left = Math.min(Math.max(8, left), window.innerWidth - w - 8);
+    b.style.left = left + 'px';
+    b.style.top = top + 'px';
+  }
+
+  function hideBubble(){
+    if (suggestState.timer) { clearTimeout(suggestState.timer); suggestState.timer = null; }
+    var b = suggestState.bubble;
+    if (!b) return;
+    suggestState.bubble = null;
+    b.style.opacity = '0';
+    b.style.transform = 'translateY(6px) scale(.97)';
+    setTimeout(function(){ if (b.parentNode) b.parentNode.removeChild(b); }, 300);
+  }
+
+  function showSuggestion(res){
+    if (!mascotEl || suggestState.bubble) return;
+    suggestState.shown = true;
+    var b = buildBubble(res.message, function(){
+      hideBubble();
+      // hand the suggestion straight to the generator as a prefilled prompt
+      aiState.pendingPrompt = res.prompt;
+      aiState.picked = (res.targets || []).map(function(t){
+        return { selector: t.selector, tag: 'div', text: t.label, matches: 1 };
+      });
+      panelView = 'ai';
+      if (!panelOpen) togglePanel(); else renderPanel();
+    }, function(){
+      hideBubble();
+      muteSuggestions();
+    });
+    document.body.appendChild(b);
+    positionBubble(b);
+    void b.offsetWidth;
+    b.style.opacity = '1';
+    b.style.transform = 'translateY(0) scale(1)';
+    suggestState.bubble = b;
+    bounceMascot();
+    // never linger - if it is ignored, it goes away quietly
+    suggestState.timer = setTimeout(function(){ hideBubble(); muteSuggestions(30 * 60 * 1000); }, 14000);
+  }
+
+  function maybeSuggest(){
+    if (!suggestAllowed()) return;
+    var regions = analyzeRegions();
+    if (regions.length < 2) return;
+    fetch(SUGGEST_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: location.href, title: document.title, regions: regions,
+        headings: [].slice.call(document.querySelectorAll('h1,h2')).slice(0, 5)
+          .map(function(h){ return (h.innerText || '').trim().slice(0, 80); }).filter(Boolean)
+      })
+    })
+      .then(function(r){ return r.json(); })
+      .then(function(j){ if (j && j.suggest && j.message) showSuggestion(j); })
+      .catch(function(){ /* offline or CSP-blocked: stay silent, never nag */ });
+  }
+
+  function armSuggestions(){
+    setTimeout(maybeSuggest, SUGGEST_DELAY);
+  }
+
   function renderPanel(){
     ensureFont();
     if (panelView === 'add') { renderAddView(); return; }
@@ -1076,6 +1270,7 @@ function flavorHub(){
   }
 
   function togglePanel(){
+    hideBubble();
     panelOpen = !panelOpen;
     if (panelOpen) {
       applyEdgeState('full');
@@ -1150,6 +1345,7 @@ function flavorHub(){
     var shieldEl = null;
     function dragShield(on){
       if (on) {
+        hideBubble();
         if (!shieldEl) {
           shieldEl = document.createElement('div');
           shieldEl.id = '__flavor_dragshield__';
@@ -1282,5 +1478,8 @@ function flavorHub(){
     if (panelOpen) renderPanel();
   });
 
-  window.__flavorHub__ = { togglePanel: togglePanel, flavors: FLAVORS };
+  armSuggestions();
+
+  window.__flavorHub__ = { togglePanel: togglePanel, flavors: FLAVORS,
+                           suggestNow: maybeSuggest, analyzeRegions: analyzeRegions };
 }
