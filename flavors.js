@@ -461,10 +461,20 @@ function flavorHub(){
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:6px;margin-top:12px;padding-top:10px;border-top:1px solid #3a2a5c;';
     var aiBtn = smallBtn('✨ AI', function(){ panelView = 'ai'; renderPanel(); });
+    // On-demand trigger: the automatic one waits 9s, fires once per page and
+    // mutes for 6h after a dismiss, which makes it hard to see on purpose.
+    var tipBtn = smallBtn('💡 Tip', function(){
+      delete (prefs.suggestMuted || {})[siteKey()];   // clear any mute for this site
+      savePrefs(prefs);
+      suggestState.shown = false;
+      if (panelOpen) togglePanel();
+      setTimeout(maybeSuggest, 350);
+    });
     var addBtn = smallBtn('+ Add', function(){ panelView = 'add'; renderPanel(); });
     var exportBtn = smallBtn('Export', function(){ doExport(exportBtn); });
     var importBtn = smallBtn('Import', function(){ panelView = 'import'; renderPanel(); });
     row.appendChild(aiBtn);
+    row.appendChild(tipBtn);
     row.appendChild(addBtn);
     row.appendChild(exportBtn);
     row.appendChild(importBtn);
