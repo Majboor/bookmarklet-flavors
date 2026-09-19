@@ -1,9 +1,27 @@
 #!/usr/bin/env python3
+import os
 import http.server
 import socketserver
 from http.server import ThreadingHTTPServer
 
+# NOT 8899. That port belongs to the Inverex/Deye solar dongle protocol on this
+# LAN, and poller_solar.py sprays binary Modbus-ish frames at it thousands of
+# times a second. Squatting there filled /var/log and starved this server's
+# connection queue, taking the whole site down intermittently.
+PORT = int(os.environ.get("FLAVORS_STATIC_PORT", "8898"))
+
 class CORSHandler(http.server.SimpleHTTPRequestHandler):
+    # Per-request journald logging turned a stray client into 85,000 messages
+    # every 30 seconds and 12 GB of /var/log. Log real errors only.
+    def log_message(self, fmt, *args):
+        pass
+
+    def log_error(self, fmt, *args):
+        code = args[0] if args else ''
+        if str(code).startswith('4'):
+            return          # malformed junk from something on the wrong port
+        super().log_error(fmt, *args)
+
     def guess_type(self, path):
         ctype = super().guess_type(path)
         if ctype.startswith('text/') or ctype in ('application/javascript', 'application/json'):
@@ -34,5 +52,6 @@ class Server(ThreadingHTTPServer):
 if __name__ == '__main__':
     # Don't let a slow client hold a worker thread forever.
     CORSHandler.timeout = 30
-    with Server(('0.0.0.0', 8899), CORSHandler) as httpd:
+    with Server(('0.0.0.0', PORT), CORSHandler) as httpd:
+        print('serving on :%d' % PORT, flush=True)
         httpd.serve_forever()
