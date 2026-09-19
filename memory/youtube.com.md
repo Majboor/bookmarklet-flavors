@@ -8,8 +8,8 @@
 domain: youtube.com
 match: /(^|\.)youtube\.com$/
 last_verified: 2026-09-19
-verified_by: playwright headless, signed-out, 1440x900, watch page
-coverage: watch page CONFIRMED · home feed UNVERIFIED (headless hit a signed-out state)
+verified_by: playwright, signed-out, 1440x900, watch + search-results pages
+coverage: watch page CONFIRMED · search results CONFIRMED · home feed UNVERIFIED (empty when signed out, even in headed Chrome)
 existing_flavor: fancy_yt
 ```
 
@@ -35,19 +35,50 @@ existing_flavor: fancy_yt
 | uploader | `ytd-video-owner-renderer a` | 2 | |
 | masthead | `ytd-masthead`, `#masthead-container` | 1 | |
 
-## DEAD — removed by YouTube, confirmed 0 matches. Do not emit these.
+## ⚠️ Selectors are PAGE-SCOPED — check the page before emitting
+
+The same selector can be alive on one YouTube page and dead on another. Verified 2026-09-19:
+
+| selector | watch | search results | home feed |
+|---|---|---|---|
+| `a#video-title` | **0 DEAD** | **23 OK** | unknown |
+| `ytd-video-renderer` | 0 | **23 OK** | unknown |
+| `a#thumbnail[href*="watch?v="]` | **0 DEAD** | 0 DEAD | unknown |
+| `a.ytLockupViewModelContentImage[href*="watch?v="]` | **26 OK** | 0 | unknown |
+| `h3.ytLockupMetadataViewModelHeadingReset` | **26 OK** | 0 | unknown |
+| `yt-thumbnail-view-model` | **26 OK** | **22 OK** | unknown |
+| `div.ytThumbnailViewModelImage` | 26 OK | **22 OK** | unknown |
+| `yt-chip-cloud-chip-renderer` | 0 | **6 OK** | unknown |
+| `ytd-rich-item-renderer` / `ytd-rich-grid-media` | 0 | 0 | unknown |
+
+### Dead everywhere tested — never emit
 
 ```
-a#thumbnail[href*="watch?v="]      a#video-title
-#related a#thumbnail               #video-title
-#secondary a#thumbnail             ytd-video-renderer #video-title
-ytd-compact-autoplay-renderer a#thumbnail
+a#thumbnail[href*="watch?v="]      #video-title (bare)
+#related a#thumbnail               ytd-rich-grid-media #video-title
+#secondary a#thumbnail             ytd-compact-autoplay-renderer a#thumbnail
 ytd-watch-next-secondary-results-renderer a#thumbnail
-ytd-rich-grid-media #video-title
+ytd-searchbox / #search-form       tp-yt-paper-chip
 ```
 
-`a#thumbnail` and `#video-title` no longer exist anywhere on the watch page. Any flavor still
-using them silently no-ops — this is the current bug in `fancy_yt`'s Doom Scroll.
+`a#thumbnail` is gone from every page tested. This is the current bug class in older flavors.
+
+### Search results page (`/results?search_query=…`) — verified signed out
+
+| role | selector | count |
+|---|---|---|
+| result item | `ytd-video-renderer` | 23 |
+| result title | `a#video-title` | 23 |
+| thumbnail | `yt-thumbnail-view-model` / `div.ytThumbnailViewModelImage` | 22 |
+| filter chips | `yt-chip-cloud-chip-renderer` | 6 |
+
+### ⚠️ Home feed — still UNVERIFIED, and not lazily
+
+`youtube.com` signed out returns **0 video links even in real headed Chrome** (the guide,
+masthead and logo render; the feed does not). This is not headless detection and not a consent
+wall — signed-out users in this region simply get no feed. Auditing it needs a logged-in
+session. Do not emit home-feed-only selectors (`ytd-rich-item-renderer`, `ytd-rich-grid-media`,
+`ytd-mini-guide-entry-renderer`, `yt-lockup-metadata-view-model a[href^="/@"]`) until confirmed.
 
 ## Theming hooks that survive component churn
 
@@ -86,10 +117,3 @@ Set on `html,ytd-app`. This is why the masthead gradient kept working while the 
   Status: **BROKEN** — next-video lookup uses `a#thumbnail`, now 0 matches. Fix by swapping to
   `a.ytLockupViewModelContentImage[href*="watch?v="]`.
 
-## Unverified — needs a logged-in DevTools pass
-
-Home feed only: `ytd-rich-item-renderer`, `ytd-rich-grid-media`, `yt-chip-cloud-chip-renderer`,
-`tp-yt-paper-chip`, `ytd-searchbox`, `#search-form`, `ytd-guide-renderer`,
-`ytd-guide-entry-renderer`, `ytd-mini-guide-entry-renderer`, `#logo-icon`,
-`yt-lockup-metadata-view-model a[href^='/@']`.
-Do not emit flavors that depend on these until confirmed.
