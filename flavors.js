@@ -588,7 +588,7 @@ function flavorHub(){
   // ===================================================================
 
   var API_BASE = 'https://flavors.waleeds.world';
-  var MEMORY_INDEX_URL = API_BASE + '/memory/index.json';
+  var MEMORY_INDEX_URL = API_BASE + '/api/memory/index.json';
   var GENERATE_URL = API_BASE + '/api/generate';
   var REQUEST_URL = API_BASE + '/api/request';
 
@@ -832,6 +832,68 @@ function flavorHub(){
     return box;
   }
 
+  // Build a candidate selector set FROM THIS PAGE, measure every one, and let the
+  // API turn the measurements into a memory file. The browser supplies the facts;
+  // the model only organises them, so Rule #2 survives.
+  function buildCandidates(){
+    var c = {};
+    function add(sel){ if (sel && sel.length < 140) c[sel] = true; }
+
+    document.querySelectorAll('[id]').forEach(function(el){
+      if (/^[A-Za-z][\w-]*$/.test(el.id) && !/^__flavor/.test(el.id)) add('#' + el.id);
+    });
+    var tags = {};
+    document.querySelectorAll('*').forEach(function(el){
+      var t = el.tagName.toLowerCase();
+      if (t.indexOf('-') !== -1) tags[t] = (tags[t] || 0) + 1;
+    });
+    Object.keys(tags).forEach(add);
+    document.querySelectorAll('[data-testid]').forEach(function(el){
+      var v = el.getAttribute('data-testid');
+      if (v && /^[\w .:-]{1,60}$/.test(v)) add('[data-testid="' + v + '"]');
+    });
+    var cls = {};
+    document.querySelectorAll('div,section,article,aside,nav,li,td,tr,h1,h2,h3,a,span,button')
+      .forEach(function(el){
+        var cn = (typeof el.className === 'string' ? el.className : '').trim();
+        if (!cn) return;
+        cn.split(/\s+/).slice(0, 3).forEach(function(k){
+          // skip hashed/obfuscated names - they change on every deploy
+          if (!/^[A-Za-z][\w-]{2,39}$/.test(k)) return;
+          if (/^[a-f0-9]{6,}$/i.test(k)) return;
+          if (/^(css|sc|jsx)-/.test(k)) return;
+          cls[k] = (cls[k] || 0) + 1;
+        });
+      });
+    Object.keys(cls).forEach(function(k){ if (cls[k] >= 3) add('.' + k); });
+    ['main','nav','aside','header','footer','article','[role="main"]','[role="navigation"]',
+     '[role="complementary"]','[role="banner"]','[role="contentinfo"]','[role="article"]',
+     '[role="feed"]','[role="list"]','[role="search"]'].forEach(add);
+    return Object.keys(c).slice(0, 220);
+  }
+
+  function learnThisSite(onStatus, done){
+    onStatus('📏 measuring this page…');
+    var cands = buildCandidates();
+    var probe = probeSelectors(cands);
+    var alive = Object.keys(probe).filter(function(k){ return probe[k] > 0; }).length;
+    onStatus('📚 teaching the API (' + alive + ' of ' + cands.length + ' matched)…');
+    fetch(API_BASE + '/api/learn', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: siteKey(), url: location.href,
+                             title: document.title, probe: probe })
+    })
+      .then(function(r){ return r.text(); })
+      .then(function(t){
+        var j = null; try { j = JSON.parse(t); } catch(e){}
+        if (!j) throw new Error('unreadable response');
+        if (j.error) throw new Error(j.error);
+        aiState.memoryIndex = null;      // force a refresh so the site shows as supported
+        done(null, j);
+      })
+      .catch(function(e){ done(e); });
+  }
+
   function renderAIView(){
     panelEl.replaceChildren();
     panelEl.appendChild(aiHeader('✨ Create a flavor'));
@@ -860,14 +922,26 @@ function flavorHub(){
         ? 'Could not reach flavor memory (' + aiState.memoryError + '). This site may block it.'
         : 'No flavor memory for this site yet, so the AI has no verified elements to build against. Send a request and it can be mapped.';
       panelEl.appendChild(no);
-      var reqBtn = smallBtn('📨 Request this site', function(){
-        fetch(REQUEST_URL, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ domain: siteKey(), page: pageSnapshot() })
-        }).then(function(){ alert('Request sent for ' + siteKey() + '.'); })
-          .catch(function(e){ alert('Could not send request: ' + e.message); });
+      if (aiState.status) {
+        var lst = document.createElement('div');
+        lst.textContent = aiState.status;
+        lst.style.cssText = 'font-size:11px;color:#caa6f5;margin:6px 0;';
+        panelEl.appendChild(lst);
+      }
+      var learnBtn = smallBtn(aiState.busy ? '⏳ Learning…' : '📚 Learn this site', function(){
+        if (aiState.busy) return;
+        aiState.busy = true; aiState.lastError = null;
+        learnThisSite(function(m){ aiState.status = m; renderPanel(); },
+          function(err, res){
+            aiState.busy = false; aiState.status = null;
+            if (err) { aiState.lastError = err.message; renderPanel(); return; }
+            aiState.lastVerdict = '✅ Learned ' + res.domain + ' — '
+              + res.verified + ' verified elements';
+            renderPanel();
+          });
+        renderPanel();
       });
-      panelEl.appendChild(reqBtn);
+      panelEl.appendChild(learnBtn);
       panelEl.appendChild(smallBtn('Cancel', function(){ panelView = 'main'; renderPanel(); }));
       return;
     }
@@ -1384,7 +1458,7 @@ function flavorHub(){
   // page and hand the model the counts. It then starts from what is actually here
   // rather than from what the memory file believed weeks ago.
   function fetchMemorySelectors(domain, cb){
-    fetch(API_BASE + '/memory/' + domain + '.md?_=' + Date.now())
+    fetch(API_BASE + '/api/memory/' + domain + '.md?_=' + Date.now())
       .then(function(r){ return r.ok ? r.text() : ''; })
       .then(function(md){
         var set = {}, re = /`([^`\n]{2,140})`/g, m;
@@ -2175,5 +2249,6 @@ function flavorHub(){
                            suggestState: suggestState, prefs: prefs,
                            maybeOfferMode: maybeOfferMode, buildTrail: buildTrail,
                            learnedContext: learnedContext,
+                           learnThisSite: learnThisSite, buildCandidates: buildCandidates,
                            suggestNow: maybeSuggest };
 }

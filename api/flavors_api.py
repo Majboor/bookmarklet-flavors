@@ -494,6 +494,73 @@ MODES = {
 }
 
 
+
+MODE_CACHE = {}
+MODE_SYSTEM = """You name interface Modes.
+
+A Mode is a single named transformation of a website that helps someone doing a
+specific thing on that specific site. Given the site, what the person is doing,
+and the VERIFIED elements available on that site, propose one.
+
+Reply with ONE JSON object and nothing else:
+{"name":"<2-3 words, Title Case, ending in Mode>",
+ "pitch":"<one short sentence the mascot says, phrased as an offer, max 90 chars>",
+ "prompt":"<a concrete instruction describing the transformation, naming only elements
+            that appear in the verified memory>"}
+
+Rules:
+- The transformation must genuinely help THAT task. If someone is bidding on work,
+  hiding the job description does not help; hiding the sidebar of unrelated jobs does.
+- Name only elements the memory verifies. Never invent a selector or a page region.
+- Prefer removing distraction and enlarging the thing they came for.
+- The pitch is an offer, not a command: "Bidding? I can clear the noise." not "Click here".
+- If the memory has nothing useful for this task, reply {"name":null} and nothing else."""
+
+
+def synthesize_mode(site, ctx):
+    """No hand-written Mode? Write one, grounded in the site's verified memory.
+
+    The curated MODES above are examples of the shape, not a whitelist - gating on
+    them meant a perfectly good site/context pair got silence just because nobody
+    had typed it out yet."""
+    ck = (site, ctx)
+    if ck in MODE_CACHE:
+        return MODE_CACHE[ck]
+    memory = load_memory(site)
+    if memory is None:
+        return None
+    examples = "\n".join(
+        '- %s on %s: %s -> "%s"' % (m["name"], d, c, m["pitch"])
+        for (d, c), m in list(MODES.items())[:4])
+    user = ("# Site\n%s\n\n# What the person is doing\n%s - %s\n\n"
+            "# Verified elements available on this site\n%s\n\n"
+            "# Examples of good Modes\n%s\n\n"
+            "Propose ONE Mode for this site and task."
+            % (site, ctx, CONTEXTS.get(ctx, ctx), memory, examples))
+    try:
+        data = post_json(OR_CHAT, {
+            "model": GEN_MODEL, "temperature": 0.5,
+            "reasoning": {"effort": "low"}, "max_tokens": 4000,
+            "messages": [{"role": "system", "content": MODE_SYSTEM},
+                         {"role": "user", "content": user}]}, timeout=180)
+    except Exception:
+        return None
+    content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+    parsed = extract_json(content or "")
+    if not parsed or not parsed.get("name") or not parsed.get("prompt"):
+        MODE_CACHE[ck] = None
+        return None
+    mode = {"name": str(parsed["name"])[:40],
+            "pitch": str(parsed.get("pitch") or "Want me to tidy this up?")[:120],
+            "prompt": str(parsed["prompt"])[:600], "generated": True}
+    MODE_CACHE[ck] = mode
+    return mode
+
+
+def resolve_mode(site, ctx):
+    return MODES.get((site, ctx)) or synthesize_mode(site, ctx)
+
+
 def part_of_day(hour):
     if hour < 5:   return "the small hours"
     if hour < 9:   return "early morning"
@@ -547,12 +614,14 @@ def handle_context(body):
     conf = probs.get(ctx, 0)
     sure = (a.get("sure") or {}).get("noul", 0)
 
-    mode = MODES.get((site, ctx))
-    # No hand-verified Mode for this pair means we have nothing genuinely useful
-    # to offer. Say nothing rather than invent a transformation.
+    mode = resolve_mode(site, ctx)
+    # Nothing to offer only when the site has no verified memory at all - then we
+    # genuinely cannot ground a transformation in anything real.
     if not mode:
         return 200, {"act": False, "context": ctx, "confidence": conf,
-                     "why": "no verified Mode for (%s, %s)" % (site, ctx)}
+                     "needsMemory": load_memory(site) is None,
+                     "why": ("no flavor memory for %s" % site) if load_memory(site) is None
+                            else "no useful Mode for (%s, %s)" % (site, ctx)}
 
     runner_up = sorted(((k, v) for k, v in probs.items() if k != ctx),
                        key=lambda kv: -kv[1])[:1]
@@ -566,7 +635,7 @@ def handle_context(body):
            "timeOfDay": part_of_day(hour)}
     if ask and runner_up:
         alt = runner_up[0][0]
-        alt_mode = MODES.get((site, alt))
+        alt_mode = resolve_mode(site, alt)
         out["ask"] = {
             "question": "Quick one — %s or %s?" % (CONTEXT_SHORT.get(ctx, ctx).lower(),
                                                    CONTEXT_SHORT.get(alt, alt).lower()),
@@ -583,10 +652,141 @@ def handle_mode(body):
     """Resolve a confirmed context to its Mode prompt."""
     site = re.sub(r"[^a-z0-9.\-]", "", str(body.get("domain") or "").lower())
     ctx = str(body.get("context") or "")
-    mode = MODES.get((site, ctx))
+    mode = resolve_mode(site, ctx)
     if not mode:
-        return 404, {"error": "no Mode for (%s, %s)" % (site, ctx)}
+        return 404, {"error": ("no flavor memory for %s - cannot ground a Mode" % site)
+                     if load_memory(site) is None
+                     else "could not devise a useful Mode for (%s, %s)" % (site, ctx),
+                     "needsMemory": load_memory(site) is None}
     return 200, {"mode": {"name": mode["name"], "pitch": mode["pitch"], "prompt": mode["prompt"]}}
+
+
+
+LEARN_SYSTEM = """You write a flavor memory file for a website.
+
+You are given selector counts MEASURED in a real browser on a real page. Those
+counts are facts. Your job is to organise and label them, NOT to add to them.
+
+ABSOLUTE RULES
+- Use ONLY selectors present in the measurements. Never invent one, never
+  generalise one, never "improve" one.
+- A selector measured 0 belongs in the DEAD list, never in the verified table.
+- Label each verified selector with the role it plays (feed item, headline,
+  sidebar, comments, thumbnail, nav, promo, ...). Say "unclear" if unsure.
+- Selectors are page-scoped: state which page was measured.
+
+Reply with ONE JSON object and nothing else:
+{"title":"<site name>","markdown":"<the full memory file in markdown>"}
+
+The markdown must follow this shape:
+
+# Flavor memory - <domain>
+
+```yaml
+domain: <domain>
+match: /(^|\\.)<escaped domain>$/
+last_verified: <date>
+verified_by: live browser probe
+coverage: <which page was measured>
+```
+
+## Verified elements - <page>
+
+| role | selector | count |
+|---|---|---|
+...
+
+## DEAD on this page - measured 0, never emit
+
+```
+...
+```
+
+## Notes
+- <anything notable: duplicate selectors matching the same nodes, obfuscated class
+  names to avoid, structural traps>
+
+## Hard constraints
+- Only the page above is verified; selectors are page-scoped.
+- Never hide a container that also holds wanted content.
+- No innerHTML / outerHTML / insertAdjacentHTML / document.write / eval / new Function.
+- Guard every querySelector result against null."""
+
+
+def handle_learn(body):
+    """Bootstrap a memory file for an unmapped site from a live browser probe.
+
+    The browser measures; the model only organises. That keeps Rule #2 intact -
+    every selector in the resulting file was counted on a real page."""
+    site = re.sub(r"[^a-z0-9.\-]", "", str(body.get("domain") or "").lower())
+    probe = body.get("probe") or {}
+    if not site or not isinstance(probe, dict) or len(probe) < 5:
+        return 400, {"error": "domain and a probe of at least 5 selectors required"}
+    if load_memory(site) is not None:
+        return 200, {"ok": True, "already": True}
+
+    alive = {k: v for k, v in probe.items() if isinstance(v, int) and v > 0}
+    dead = [k for k, v in probe.items() if v == 0]
+    if len(alive) < 5:
+        return 422, {"error": "only %d selectors matched anything - not enough to learn from"
+                              % len(alive)}
+
+    measured = "\n".join("%-64s %d" % (k, v) for k, v in
+                          sorted(alive.items(), key=lambda kv: -kv[1])[:120])
+    dead_txt = "\n".join(dead[:60]) or "(none)"
+    user = ("# Domain\n%s\n\n# Page measured\n%s\n(title: %s)\n\n"
+            "# MEASURED selector counts (facts)\n%s\n\n"
+            "# Measured ZERO on this page\n%s\n\n"
+            "Write the memory file. Today is %s."
+            % (site, str(body.get("url") or "")[:200], str(body.get("title") or "")[:120],
+               measured, dead_txt, time.strftime("%Y-%m-%d")))
+    try:
+        data = post_json(OR_CHAT, {
+            "model": GEN_MODEL, "temperature": 0.2,
+            "reasoning": {"effort": "low"}, "max_tokens": 12000,
+            "messages": [{"role": "system", "content": LEARN_SYSTEM},
+                         {"role": "user", "content": user}]}, timeout=240)
+    except Exception as e:
+        return 502, {"error": "model call failed: %s" % e}
+    content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+    parsed = extract_json(content or "")
+    if not parsed or not parsed.get("markdown"):
+        return 502, {"error": "model did not return a memory file"}
+
+    md = str(parsed["markdown"])
+    # Refuse anything the browser did not actually measure.
+    cited = set(re.findall(r"`([^`\n]{2,140})`", md))
+    invented = [c for c in cited
+                if c not in probe and not c.startswith(("--", "@", "/"))
+                and re.search(r"[#.\[]|^[a-z]+-[a-z-]+$", c)]
+    if len(invented) > max(3, len(cited) // 5):
+        return 422, {"error": "model invented %d selectors it never measured" % len(invented),
+                     "invented": invented[:10]}
+
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    path = os.path.join(MEMORY_DIR, site + ".md")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(md)
+    os.replace(tmp, path)
+
+    idx_path = os.path.join(MEMORY_DIR, "index.json")
+    try:
+        with open(idx_path, encoding="utf-8") as fh:
+            idx = json.load(fh)
+    except Exception:
+        idx = {"domains": []}
+    if not any(d.get("domain") == site for d in idx["domains"]):
+        idx["domains"].append({"domain": site, "aliases": [], "file": site + ".md",
+                               "elements": len(alive), "verified": time.strftime("%Y-%m-%d"),
+                               "coverage": "learned from a live browser probe",
+                               "learned": True})
+        idx["updated"] = time.strftime("%Y-%m-%d")
+        with open(idx_path + ".tmp", "w", encoding="utf-8") as fh:
+            json.dump(idx, fh, indent=2)
+        os.replace(idx_path + ".tmp", idx_path)
+    return 200, {"ok": True, "domain": site, "verified": len(alive), "dead": len(dead),
+                 "invented": len(invented), "title": parsed.get("title")}
 
 
 OBS_DIR = os.path.join(MEMORY_DIR, "observed")
@@ -778,7 +978,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _send_text(self, status, body, ctype="text/plain; charset=utf-8"):
+        data = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
+        route = self.path.split("?")[0].rstrip("/")
+        # Serve memory from HERE, not the static host. Files learned at runtime
+        # land on this box, so the static repo copy is always a stale subset -
+        # the client would keep calling a learned site "unsupported".
+        if route == "/api/memory" or route == "/api/memory/index.json":
+            path = os.path.join(MEMORY_DIR, "index.json")
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    return self._send_text(200, fh.read(), "application/json")
+            except Exception:
+                return self._send(200, {"domains": []})
+        if route.startswith("/api/memory/"):
+            name = re.sub(r"[^a-z0-9.\-]", "", route[len("/api/memory/"):].lower())
+            if name.endswith(".md"):
+                path = os.path.join(MEMORY_DIR, name)
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as fh:
+                        return self._send_text(200, fh.read(), "text/markdown; charset=utf-8")
+            return self._send(404, {"error": "not found"})
         if self.path.rstrip("/") in ("/api/health", "/health"):
             doms = sorted(f[:-3] for f in os.listdir(MEMORY_DIR) if f.endswith(".md")) if os.path.isdir(MEMORY_DIR) else []
             return self._send(200, {"ok": True, "key": bool(KEY), "memory": doms})
@@ -798,6 +1027,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(*handle_generate(body))
             if route == "/api/suggest":
                 return self._send(*handle_suggest(body))
+            if route == "/api/learn":
+                return self._send(*handle_learn(body))
             if route == "/api/visit":
                 n = record_visit(_client_key(self), body.get("host"))
                 return self._send(200, {"ok": True, "trail": n})
