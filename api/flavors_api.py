@@ -12,7 +12,7 @@ The OpenRouter key lives here, never in flavors.js, which is world-readable.
        FLAVORS_PORT         (default 9800)
        MEMORY_DIR           (default /opt/flavors/memory)
 """
-import json, os, re, sys, urllib.request, urllib.error, threading, traceback
+import json, os, re, sys, time, hashlib, urllib.request, urllib.error, threading, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KEY = os.environ.get("OPENROUTER_API_KEY", "")
@@ -356,6 +356,239 @@ def handle_suggest(body):
 
 
 
+
+
+# ---------------------------------------------------------------------
+#  Cross-site trail (server side)
+#
+#  localStorage is ORIGIN-SCOPED, so a trail kept in the page can only ever
+#  see the site it is on - which makes "was searching API docs, now watching
+#  a tutorial" impossible client-side. The API sees every site though, so the
+#  trail lives here instead.
+#
+#  PRIVACY: hostnames only. No URLs, paths, queries or titles. Held in memory
+#  only (never written to disk), 30-minute TTL, keyed by a salted hash of the
+#  client IP so the raw address is not retained. Lost on restart, by design.
+# ---------------------------------------------------------------------
+TRAIL_TTL = 30 * 60
+_TRAILS = {}
+_TRAIL_LOCK = threading.Lock()
+_TRAIL_SALT = os.urandom(16)
+
+
+def _client_key(handler):
+    ip = (handler.headers.get("CF-Connecting-IP")
+          or handler.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+          or handler.client_address[0])
+    return hashlib.sha256(_TRAIL_SALT + ip.encode()).hexdigest()[:16]
+
+
+def record_visit(key, host):
+    host = re.sub(r"[^a-z0-9.\-]", "", str(host or "").lower())[:80]
+    if not host:
+        return 0
+    now = time.time()
+    with _TRAIL_LOCK:
+        t = [x for x in _TRAILS.get(key, []) if now - x[1] < TRAIL_TTL]
+        if not t or t[-1][0] != host:
+            t.append([host, now])
+        else:
+            t[-1][1] = now
+        _TRAILS[key] = t[-60:]
+        # opportunistic sweep so idle keys do not accumulate
+        if len(_TRAILS) > 500:
+            for k in [k for k, v in _TRAILS.items() if not v or now - v[-1][1] > TRAIL_TTL]:
+                _TRAILS.pop(k, None)
+        return len(t)
+
+
+def trail_for(key):
+    now = time.time()
+    with _TRAIL_LOCK:
+        entries = [x for x in _TRAILS.get(key, []) if now - x[1] < TRAIL_TTL]
+    agg = {}
+    for host, ts in entries:
+        r = agg.setdefault(host, {"host": host, "n": 0, "last": 0})
+        r["n"] += 1
+        r["last"] = max(r["last"], ts)
+    out = [{"host": r["host"], "n": r["n"], "minsAgo": int((now - r["last"]) / 60)}
+           for r in agg.values()]
+    return sorted(out, key=lambda r: r["minsAgo"])[:10]
+
+
+# ---------------------------------------------------------------------
+#  /api/context  -  what is this person actually trying to do right now?
+#
+#  Page clutter answers "what is noisy here". This answers "what are they
+#  here FOR", which is the question a prompt box can never ask because the
+#  user would have to know to type it. Evidence is the site, the local time
+#  and the recent trail - the same person on youtube.com at 14:00 after
+#  searching API docs is not doing what they are doing at 23:00 after
+#  watching stand-up.
+# ---------------------------------------------------------------------
+CONTEXTS = {
+    "working": "Getting a work task done - building, fixing, shipping something",
+    "learning": "Studying or following a tutorial to understand something",
+    "job_hunting": "Looking for work, bidding, applying or pitching",
+    "hiring": "Evaluating people - sourcing candidates, reviewing profiles",
+    "research": "Digging into a topic across sources to form a view",
+    "entertainment": "Relaxing - watching, scrolling or listening for fun",
+    "shopping": "Browsing or comparing things to buy",
+    "admin": "Chores - email, invoices, forms, accounts",
+}
+
+# Short, human labels for the confirm question. The long criteria above are for
+# jev; nobody wants to read "studying or following a tutorial to understand
+# something" on a button.
+CONTEXT_SHORT = {
+    "working": "Working", "learning": "Studying", "job_hunting": "Job hunting",
+    "hiring": "Hiring", "research": "Researching", "entertainment": "Relaxing",
+    "shopping": "Shopping", "admin": "Admin",
+}
+
+# A Mode is a NAMED, hand-written transformation for one (context, site) pair.
+# The model picks which Mode fits; it does not invent the transformation. An
+# intent read that produces a useless change is worse than staying quiet.
+MODES = {
+    ("youtube.com", "learning"): {
+        "name": "Study Mode",
+        "pitch": "Want me to strip this down so you can focus on the tutorial?",
+        "prompt": "Hide the recommendations sidebar, comments and Shorts, widen the player "
+                  "and keep the video and its title. Calm, low-contrast colours.",
+    },
+    ("youtube.com", "working"): {
+        "name": "Reference Mode",
+        "pitch": "Using this as a reference? I can clear everything but the video.",
+        "prompt": "Hide the recommendations sidebar, comments, Shorts and the filter chips. "
+                  "Keep the player and title only, and widen the player.",
+    },
+    ("youtube.com", "entertainment"): {
+        "name": "Lean-back Mode",
+        "pitch": "Winding down? I can make this bigger and quieter.",
+        "prompt": "Make thumbnails and the player larger and rounded, hide the comments "
+                  "and the filter chips, keep the recommendations, soften the colours.",
+    },
+    ("youtube.com", "research"): {
+        "name": "Research Mode",
+        "pitch": "Researching? I can keep the related videos and drop the noise.",
+        "prompt": "Hide comments and Shorts, keep the recommendations sidebar and make its "
+                  "titles larger and easier to scan.",
+    },
+    ("news.ycombinator.com", "research"): {
+        "name": "Reading Mode",
+        "pitch": "Want this easier to scan?",
+        "prompt": "Larger story titles, dim the points/author line, wider spacing, calm palette.",
+    },
+    ("stackoverflow.com", "working"): {
+        "name": "Answer Mode",
+        "pitch": "Debugging? I can put the answers front and centre.",
+        "prompt": "Hide the right sidebar and the question's comments, emphasise the accepted "
+                  "answer and make code blocks larger.",
+    },
+    ("github.com", "working"): {
+        "name": "Code Mode",
+        "pitch": "Want the chrome out of the way?",
+        "prompt": "Hide the repo header nav and side panels, widen the file listing, "
+                  "larger monospace.",
+    },
+}
+
+
+def part_of_day(hour):
+    if hour < 5:   return "the small hours"
+    if hour < 9:   return "early morning"
+    if hour < 12:  return "morning"
+    if hour < 17:  return "afternoon"
+    if hour < 21:  return "evening"
+    return "late evening"
+
+
+def handle_context(body):
+    site = re.sub(r"[^a-z0-9.\-]", "", str(body.get("domain") or "").lower())
+    if not site:
+        return 400, {"error": "domain required"}
+    hour = body.get("hour")
+    hour = int(hour) if isinstance(hour, (int, float)) and 0 <= hour <= 23 else 12
+    weekday = str(body.get("weekday") or "")[:12]
+    trail = body.get("_serverTrail") or body.get("trail") or []   # hostnames only
+    page_kind = str(body.get("pageKind") or "")[:60]
+
+    trail_txt = "\n".join(
+        "  - %s  (%s page%s, %s)" % (t.get("host"), t.get("n"),
+                                     "" if t.get("n") == 1 else "s",
+                                     ("%s min ago" % t.get("minsAgo")) if t.get("minsAgo") is not None else "recently")
+        for t in trail[:10]) or "  (nothing recorded yet)"
+
+    state = (
+        "Local time: %s %02d:00 (%s)\n"
+        "Current site: %s\n"
+        "Current page: %s\n\n"
+        "Sites visited in the last half hour, most recent first:\n%s"
+        % (weekday, hour, part_of_day(hour), site, page_kind or "unknown", trail_txt))
+
+    questions = {
+        "context": {"type": "choice",
+                    "instructions": "What is this person most likely doing right now? "
+                                    "Weigh the trail and the time of day, not just the site.",
+                    "criteria": CONTEXTS},
+        "sure": {"type": "noul",
+                 "instructions": "Is the evidence strong enough to act on without asking them?",
+                 "criteria": {"true": "The trail and time point clearly at one thing",
+                              "false": "It is genuinely ambiguous - two readings fit equally"}},
+    }
+    try:
+        a = (post_json(OR_DECISIONS, {"model": JEV_MODEL, "state": state,
+                                      "questions": questions}, timeout=90))["answers"]
+    except urllib.error.HTTPError as e:
+        return 502, {"error": "jev %s: %s" % (e.code, e.read()[:200].decode("utf8", "replace"))}
+
+    ctx = (a.get("context") or {}).get("choice")
+    probs = (a.get("context") or {}).get("probabilities") or {}
+    conf = probs.get(ctx, 0)
+    sure = (a.get("sure") or {}).get("noul", 0)
+
+    mode = MODES.get((site, ctx))
+    # No hand-verified Mode for this pair means we have nothing genuinely useful
+    # to offer. Say nothing rather than invent a transformation.
+    if not mode:
+        return 200, {"act": False, "context": ctx, "confidence": conf,
+                     "why": "no verified Mode for (%s, %s)" % (site, ctx)}
+
+    runner_up = sorted(((k, v) for k, v in probs.items() if k != ctx),
+                       key=lambda kv: -kv[1])[:1]
+    # `sure` reads low even when the choice is unanimous, so gating on it alone
+    # meant asking every single time - which is nagging, not confirming. Trust the
+    # choice distribution, and only fall back to `sure` when it is very low
+    # (that is the genuinely evidence-free case, e.g. no trail at all).
+    ask = (conf < 0.75) or (sure < 0.30)
+    out = {"act": True, "context": ctx, "confidence": conf, "sure": sure,
+           "mode": {"name": mode["name"], "pitch": mode["pitch"], "prompt": mode["prompt"]},
+           "timeOfDay": part_of_day(hour)}
+    if ask and runner_up:
+        alt = runner_up[0][0]
+        alt_mode = MODES.get((site, alt))
+        out["ask"] = {
+            "question": "Quick one — %s or %s?" % (CONTEXT_SHORT.get(ctx, ctx).lower(),
+                                                   CONTEXT_SHORT.get(alt, alt).lower()),
+            "options": [
+                {"key": ctx, "label": CONTEXT_SHORT.get(ctx, ctx), "mode": mode["name"]},
+                {"key": alt, "label": CONTEXT_SHORT.get(alt, alt),
+                 "mode": (alt_mode or {}).get("name")},
+            ],
+        }
+    return 200, out
+
+
+def handle_mode(body):
+    """Resolve a confirmed context to its Mode prompt."""
+    site = re.sub(r"[^a-z0-9.\-]", "", str(body.get("domain") or "").lower())
+    ctx = str(body.get("context") or "")
+    mode = MODES.get((site, ctx))
+    if not mode:
+        return 404, {"error": "no Mode for (%s, %s)" % (site, ctx)}
+    return 200, {"mode": {"name": mode["name"], "pitch": mode["pitch"], "prompt": mode["prompt"]}}
+
+
 OBS_DIR = os.path.join(MEMORY_DIR, "observed")
 
 
@@ -558,13 +791,21 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._send(400, {"error": "bad JSON body"})
         route = self.path.split("?")[0].rstrip("/")
-        if route not in ("/api/observe", "/api/request") and not KEY:
+        if route not in ("/api/observe", "/api/request", "/api/visit") and not KEY:
             return self._send(500, {"error": "Server missing OPENROUTER_API_KEY"})
         try:
             if route == "/api/generate":
                 return self._send(*handle_generate(body))
             if route == "/api/suggest":
                 return self._send(*handle_suggest(body))
+            if route == "/api/visit":
+                n = record_visit(_client_key(self), body.get("host"))
+                return self._send(200, {"ok": True, "trail": n})
+            if route == "/api/context":
+                body["_serverTrail"] = trail_for(_client_key(self))
+                return self._send(*handle_context(body))
+            if route == "/api/mode":
+                return self._send(*handle_mode(body))
             if route == "/api/repair":
                 return self._send(*handle_repair(body))
             if route == "/api/observe":

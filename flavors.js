@@ -1353,7 +1353,10 @@ function flavorHub(){
     // Seed it NOW. Leaving it empty meant the first interval tick always looked
     // like a navigation and wiped whatever the initial suggestion had recorded.
     suggestState.lastUrl = location.host + location.pathname;
-    setTimeout(maybeSuggest, SUGGEST_DELAY);
+    recordVisit();
+    // Context first - "what are you here for" beats "what is noisy here".
+    setTimeout(maybeOfferMode, SUGGEST_DELAY);
+    setTimeout(maybeSuggest, SUGGEST_DELAY + SUGGEST_INTERVAL);
     suggestState.loop = setInterval(function(){
       // an SPA navigation is a new page: reset what we have already said
       // Compare host+path only. YouTube rewrites query params while a video
@@ -1364,7 +1367,8 @@ function flavorHub(){
         suggestState.lastUrl = here;
         suggestState.said = {}; suggestState.count = 0; suggestState.dismisses = 0;
       }
-      maybeSuggest();
+      // alternate: context offer, then clutter tip, then context again
+      if (suggestState.count % 2 === 0) maybeOfferMode(); else maybeSuggest();
     }, SUGGEST_INTERVAL);
   }
 
@@ -1627,6 +1631,207 @@ function flavorHub(){
         onStatus('🔬 checking it against this page…');
         attemptOnce(gen);
       });
+    });
+  }
+
+  // ===================================================================
+  //  Context layer: SITE -> CONTEXT -> INTENT -> MODE
+  //  A prompt box can only answer "what would you like to change?".
+  //  This answers "what are you here for?", which the user never has to
+  //  put into words. Evidence: the site, the local clock, and the trail.
+  //
+  //  PRIVACY: the trail keeps HOSTNAMES ONLY, in localStorage, capped to
+  //  the last 30 minutes. It never stores or sends URLs, paths, queries or
+  //  the titles of past pages. Only the current page's title is sent, and
+  //  only because intent turns on it.
+  // ===================================================================
+
+  var CONTEXT_URL = API_BASE + '/api/context';
+  var TRAIL_KEY = '__flavor_trail__';
+  var TRAIL_WINDOW = 30 * 60 * 1000;
+  var ctxState = { asked: false, offered: {}, current: null };
+
+  function readTrail(){
+    try { return JSON.parse(localStorage.getItem(TRAIL_KEY) || '[]'); }
+    catch(e){ return []; }
+  }
+
+  function recordVisit(){
+    // The authoritative trail lives on the API: localStorage is origin-scoped,
+    // so a page-side trail can only ever see the site it is on, which makes
+    // "was reading API docs, now watching a tutorial" impossible here.
+    // Hostname only - never the URL, path or title.
+    try {
+      fetch(API_BASE + '/api/visit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: location.host })
+      }).catch(function(){});
+    } catch(e){}
+    try {
+      var now = Date.now();
+      var t = readTrail().filter(function(x){ return now - x.t < TRAIL_WINDOW; });
+      var last = t[t.length - 1];
+      if (!last || last.h !== location.host) t.push({ h: location.host, t: now });
+      else last.t = now;
+      localStorage.setItem(TRAIL_KEY, JSON.stringify(t.slice(-40)));
+    } catch(e){}
+  }
+
+  function buildTrail(){
+    var now = Date.now(), t = readTrail(), byHost = {};
+    t.forEach(function(x){
+      if (now - x.t >= TRAIL_WINDOW) return;
+      var r = byHost[x.h] || (byHost[x.h] = { host: x.h, n: 0, last: 0 });
+      r.n++; if (x.t > r.last) r.last = x.t;
+    });
+    return Object.keys(byHost).map(function(h){
+      var r = byHost[h];
+      return { host: r.host, n: r.n, minsAgo: Math.round((now - r.last) / 60000) };
+    }).sort(function(a, b){ return a.minsAgo - b.minsAgo; }).slice(0, 10);
+  }
+
+  function hourBucket(h){
+    return h < 5 ? 'night' : h < 12 ? 'morning' : h < 17 ? 'afternoon'
+         : h < 21 ? 'evening' : 'lateeve';
+  }
+
+  // Remember what they told us, per site AND time bucket - "youtube in the
+  // afternoon" is a different answer from "youtube at midnight".
+  function learnedContext(){
+    var mem = prefs.contextMemory || {};
+    return mem[siteKey() + '@' + hourBucket(new Date().getHours())] || null;
+  }
+  function learnContext(ctx){
+    prefs.contextMemory = prefs.contextMemory || {};
+    prefs.contextMemory[siteKey() + '@' + hourBucket(new Date().getHours())] = ctx;
+    savePrefs(prefs);
+  }
+
+  function buildChoiceBubble(text, options, onPick, onSkip){
+    var b = document.createElement('div');
+    b.id = '__flavor_bubble__';
+    b.style.cssText = 'position:fixed;z-index:2147483646;max-width:260px;background:linear-gradient(150deg,#3a1c66,#2a1b45);' +
+      'color:#f5e9ff;border:1px solid rgba(200,109,252,.45);border-radius:14px;padding:11px 12px 9px;' +
+      'font-family:Quicksand,-apple-system,sans-serif;font-size:12.5px;line-height:1.45;' +
+      'box-shadow:0 10px 30px rgba(0,0,0,.45);opacity:0;transform:translateY(6px) scale(.97);' +
+      'transition:opacity .28s ease,transform .28s cubic-bezier(.34,1.56,.64,1);';
+    var msg = document.createElement('div');
+    msg.textContent = text;
+    msg.style.cssText = 'margin-bottom:9px;';
+    b.appendChild(msg);
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    options.forEach(function(o, i){
+      var btn = document.createElement('button');
+      btn.textContent = o.label;
+      btn.style.cssText = 'flex:1;min-width:88px;border:none;border-radius:999px;padding:6px 10px;cursor:pointer;' +
+        'font-family:inherit;font-size:11.5px;font-weight:700;' +
+        (i === 0 ? 'color:#fff;background:linear-gradient(100deg,#7b2ff7,#ff8fe0);'
+                 : 'color:#caa6f5;background:#2a1b45;');
+      btn.onclick = function(){ onPick(o); };
+      row.appendChild(btn);
+    });
+    var skip = document.createElement('button');
+    skip.textContent = '✕';
+    skip.title = 'Not now';
+    skip.style.cssText = 'border:none;border-radius:999px;padding:6px 9px;cursor:pointer;color:#8a76ab;background:transparent;font-size:11px;';
+    skip.onclick = onSkip;
+    row.appendChild(skip);
+    b.appendChild(row);
+    return b;
+  }
+
+  function showChoice(text, options, onPick){
+    if (!mascotEl || suggestState.bubble) return;
+    var b = buildChoiceBubble(text, options, function(o){
+      hideBubble(); onPick(o);
+    }, function(){
+      hideBubble();
+      suggestState.pauseUntil = Date.now() + SUGGEST_INTERVAL * 3;
+    });
+    document.body.appendChild(b);
+    suggestState.bubble = b;
+    positionBubble(b);
+    void b.offsetWidth;
+    b.style.opacity = '1'; b.style.transform = 'translateY(0) scale(1)';
+    bounceMascot();
+    suggestState.timer = setTimeout(function(){
+      hideBubble();
+      suggestState.pauseUntil = Date.now() + SUGGEST_INTERVAL * 2;
+    }, 16000);
+  }
+
+  // Offer a named Mode. Accepting runs the normal generate -> verify -> repair
+  // loop with the Mode's prompt, so the result is measured like anything else.
+  function offerMode(mode, ctx){
+    if (ctxState.offered[mode.name]) return;
+    showChoice(mode.pitch, [{ label: 'Yes — ' + mode.name, key: 'yes' },
+                            { label: 'No thanks', key: 'no' }], function(o){
+      if (o.key !== 'yes') { suggestState.pauseUntil = Date.now() + SUGGEST_INTERVAL * 3; return; }
+      ctxState.offered[mode.name] = true;
+      aiState.pendingPrompt = mode.prompt;
+      panelView = 'ai';
+      if (!panelOpen) togglePanel(); else renderPanel();
+    });
+  }
+
+  function requestContext(cb){
+    var now = new Date();
+    fetch(CONTEXT_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        domain: siteKey(),
+        hour: now.getHours(),
+        weekday: ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getDay()],
+        pageKind: (document.title || '').slice(0, 90),
+        trail: buildTrail()
+      })
+    })
+      .then(function(r){ return r.json(); })
+      .then(cb)
+      .catch(function(){ cb(null); });
+  }
+
+  function maybeOfferMode(){
+    if (suggestState.bubble || panelOpen) return;
+    if (suggestState.pauseUntil && Date.now() < suggestState.pauseUntil) return;
+
+    var known = learnedContext();
+    if (known) {
+      // Already told us what they do here at this hour - skip the question.
+      fetch(API_BASE + '/api/mode', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: siteKey(), context: known })
+      })
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(j){ if (j && j.mode) offerMode(j.mode, known); })
+        .catch(function(){});
+      return;
+    }
+
+    requestContext(function(res){
+      if (!res || !res.act || !res.mode) return;
+      ctxState.current = res.context;
+      if (res.ask && !ctxState.asked) {
+        ctxState.asked = true;
+        showChoice(res.ask.question, res.ask.options.map(function(o){
+          return { label: o.label, key: o.key, mode: o.mode };
+        }), function(o){
+          learnContext(o.key);          // remember for this site + time bucket
+          fetch(API_BASE + '/api/mode', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain: siteKey(), context: o.key })
+          })
+            .then(function(r){ return r.ok ? r.json() : null; })
+            .then(function(j){
+              if (j && j.mode) setTimeout(function(){ offerMode(j.mode, o.key); }, 500);
+              else showNotice("Noted — I don't have a Mode for that here yet.");
+            })
+            .catch(function(){});
+        });
+        return;
+      }
+      offerMode(res.mode, res.context);
     });
   }
 
@@ -1968,5 +2173,7 @@ function flavorHub(){
                            extractSelectors: extractSelectors,
                            livePageReport: livePageReport,
                            suggestState: suggestState, prefs: prefs,
+                           maybeOfferMode: maybeOfferMode, buildTrail: buildTrail,
+                           learnedContext: learnedContext,
                            suggestNow: maybeSuggest };
 }
