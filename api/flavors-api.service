@@ -1,0 +1,15 @@
+[Unit]
+Description=Flavors API (GLM 5.3 generation + jev suggestions)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=OPENROUTER_API_KEY=<set me - chmod 600 this file>
+Environment=FLAVORS_PORT=9800
+Environment=MEMORY_DIR=/opt/flavors/memory
+ExecStart=/usr/bin/python3 /opt/flavors/flavors_api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
