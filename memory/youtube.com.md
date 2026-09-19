@@ -8,8 +8,8 @@
 domain: youtube.com
 match: /(^|\.)youtube\.com$/
 last_verified: 2026-09-19
-verified_by: playwright, signed-out, 1440x900, watch + search-results pages
-coverage: watch page CONFIRMED · search results CONFIRMED · home feed UNVERIFIED (empty when signed out, even in headed Chrome)
+verified_by: playwright signed-out (watch, results) + user's own logged-in DevTools (home feed)
+coverage: home feed (SIGNED IN) · watch page · search results — all CONFIRMED
 existing_flavor: fancy_yt
 ```
 
@@ -37,31 +37,76 @@ existing_flavor: fancy_yt
 
 ## ⚠️ Selectors are PAGE-SCOPED — check the page before emitting
 
-The same selector can be alive on one YouTube page and dead on another. Verified 2026-09-19:
+The same selector can be alive on one YouTube page and dead on another. All three pages
+verified 2026-09-19 (home feed verified **signed in**, which is the only way it renders):
 
-| selector | watch | search results | home feed |
+| selector | home feed | watch | search results |
 |---|---|---|---|
-| `a#video-title` | **0 DEAD** | **23 OK** | unknown |
-| `ytd-video-renderer` | 0 | **23 OK** | unknown |
-| `a#thumbnail[href*="watch?v="]` | **0 DEAD** | 0 DEAD | unknown |
-| `a.ytLockupViewModelContentImage[href*="watch?v="]` | **26 OK** | 0 | unknown |
-| `h3.ytLockupMetadataViewModelHeadingReset` | **26 OK** | 0 | unknown |
-| `yt-thumbnail-view-model` | **26 OK** | **22 OK** | unknown |
-| `div.ytThumbnailViewModelImage` | 26 OK | **22 OK** | unknown |
-| `yt-chip-cloud-chip-renderer` | 0 | **6 OK** | unknown |
-| `ytd-rich-item-renderer` / `ytd-rich-grid-media` | 0 | 0 | unknown |
+| `ytd-rich-item-renderer` | **37 OK** | 0 | 0 |
+| `yt-lockup-view-model` | **27 OK** | 52 OK | 2 |
+| `a.ytLockupViewModelContentImage[href*="watch?v="]` | **25 OK** | **26 OK** | 0 |
+| `h3.ytLockupMetadataViewModelHeadingReset` | **25 OK** | **26 OK** | 0 |
+| `a.ytLockupMetadataViewModelTitle` | **25 OK** | 26 OK | 0 |
+| `yt-thumbnail-view-model` | **37 OK** | **26 OK** | **22 OK** |
+| `div.ytThumbnailViewModelImage` | **37 OK** | 26 OK | **22 OK** |
+| `yt-chip-cloud-chip-renderer` | **21 OK** | 0 | **6 OK** |
+| `a#video-title` | **0 DEAD** | **0 DEAD** | **23 OK** |
+| `ytd-video-renderer` | 0 | 0 | **23 OK** |
+| `a#thumbnail` | **2** (ads/shelves only) | 0 DEAD | 0 DEAD |
+| `ytd-thumbnail` | 2 | 2 | 0 |
+| `ytd-rich-grid-media` | **0 DEAD** | 0 | 0 |
 
-### Dead everywhere tested — never emit
+### Dead on EVERY page tested — never emit
 
 ```
-a#thumbnail[href*="watch?v="]      #video-title (bare)
-#related a#thumbnail               ytd-rich-grid-media #video-title
-#secondary a#thumbnail             ytd-compact-autoplay-renderer a#thumbnail
+ytd-searchbox        #search-form         tp-yt-paper-chip
+yt-chip-cloud-renderer                    ytd-shelf-renderer
+ytd-reel-shelf-renderer                   ytd-rich-grid-media
+#video-title (bare)  ytd-rich-grid-media #video-title
+ytd-compact-autoplay-renderer a#thumbnail
 ytd-watch-next-secondary-results-renderer a#thumbnail
-ytd-searchbox / #search-form       tp-yt-paper-chip
 ```
 
-`a#thumbnail` is gone from every page tested. This is the current bug class in older flavors.
+⚠️ `a#thumbnail` is **not** dead everywhere: it is 0 on watch and search results but **2 on the
+home feed** (ad / shelf lockups). Do not use it as a general feed handle — use
+`a.ytLockupViewModelContentImage` — but do not assume it matches nothing either.
+
+### Home feed (`youtube.com/`) — verified SIGNED IN, 53 video links
+
+| role | selector | count |
+|---|---|---|
+| feed grid item | `ytd-rich-item-renderer` | 37 |
+| feed grid container | `ytd-rich-grid-renderer` | 1 |
+| feed section row | `ytd-rich-section-renderer` | 3 |
+| video lockup | `yt-lockup-view-model` | 27 |
+| lockup thumb link | `a.ytLockupViewModelContentImage[href*="watch?v="]` | 25 |
+| lockup title | `h3.ytLockupMetadataViewModelHeadingReset` | 25 |
+| lockup title link | `a.ytLockupMetadataViewModelTitle` | 25 |
+| thumbnail | `yt-thumbnail-view-model` | 37 |
+| thumbnail image box | `div.ytThumbnailViewModelImage` | 37 |
+| channel link | `yt-lockup-metadata-view-model a[href^="/@"]` | 23 |
+| filter chip | `yt-chip-cloud-chip-renderer` | 21 |
+| chip bar | `ytd-feed-filter-chip-bar-renderer` / `#chips-wrapper` | 1 / 1 |
+| **Shorts tile** | `ytm-shorts-lockup-view-model` | 10 |
+| sidebar (expanded) | `ytd-guide-renderer` / `#guide` / `#guide-content` | 1 |
+| sidebar entry | `ytd-guide-entry-renderer` | 29 |
+| sidebar (collapsed) | `ytd-mini-guide-renderer` / `ytd-mini-guide-entry-renderer` | 1 / 4 |
+| masthead | `ytd-masthead` / `#masthead-container` | 1 |
+| masthead centre (search) | `#center` | 1 |
+| logo | `#logo-icon` | 4 |
+| page body | `ytd-browse` / `ytd-two-column-browse-results-renderer` | 1 |
+| generic contents | `#contents` | 4 |
+
+**Hiding Shorts:** `ytm-shorts-lockup-view-model` (10) is the tile; its row is a
+`ytd-rich-section-renderer` (3 on the page) — hide the section to remove the whole shelf,
+the tile alone leaves an empty row.
+
+**Ads:** ad lockups carry `ad-button-view-model` / `lockup-attachments-view-model`
+(`.ytLockupAttachmentsViewModelHost`) inside a normal `div.ytLockupViewModelHost` — that is
+what the 2 stray `a#thumbnail` matches belong to.
+
+**The search box is NOT `ytd-searchbox`** — that returns 0 even signed in. Use `#center`
+inside `ytd-masthead`.
 
 ### Search results page (`/results?search_query=…`) — verified signed out
 
@@ -71,14 +116,6 @@ ytd-searchbox / #search-form       tp-yt-paper-chip
 | result title | `a#video-title` | 23 |
 | thumbnail | `yt-thumbnail-view-model` / `div.ytThumbnailViewModelImage` | 22 |
 | filter chips | `yt-chip-cloud-chip-renderer` | 6 |
-
-### ⚠️ Home feed — still UNVERIFIED, and not lazily
-
-`youtube.com` signed out returns **0 video links even in real headed Chrome** (the guide,
-masthead and logo render; the feed does not). This is not headless detection and not a consent
-wall — signed-out users in this region simply get no feed. Auditing it needs a logged-in
-session. Do not emit home-feed-only selectors (`ytd-rich-item-renderer`, `ytd-rich-grid-media`,
-`ytd-mini-guide-entry-renderer`, `yt-lockup-metadata-view-model a[href^="/@"]`) until confirmed.
 
 ## Theming hooks that survive component churn
 

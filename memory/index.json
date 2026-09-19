@@ -8,9 +8,9 @@
         "music.youtube.com"
       ],
       "file": "youtube.com.md",
-      "elements": 17,
+      "elements": 38,
       "verified": "2026-09-19",
-      "coverage": "watch + search results verified; home feed needs a logged-in session",
+      "coverage": "home feed (signed in), watch page, search results \u2014 all verified",
       "existing_flavor": "fancy_yt"
     },
     {

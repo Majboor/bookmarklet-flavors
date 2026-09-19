@@ -132,7 +132,11 @@ KIND_LABEL = {
 }
 REMOVABLE = {"recommendations", "comments", "ads", "promo", "chat"}
 PLURAL = {"recommendations", "comments", "ads", "meta"}
-BANNED = re.compile(r"\b(innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\s*\()")
+BANNED = re.compile(
+    r"\b(innerHTML|outerHTML|insertAdjacentHTML|document\.write(?:ln)?"
+    r"|eval\s*\(|new\s+Function\s*\(|Function\s*\(\s*[\"']"
+    r"|set(?:Timeout|Interval)\s*\(\s*[\"'])"
+)
 
 
 def post_json(url, payload, timeout=180):
