@@ -351,9 +351,39 @@ function flavorHub(){
   }
   function saveCustomFlavors(list){ prefs.customFlavors = list; savePrefs(prefs); }
 
+  // Trusted Types (YouTube sends require-trusted-types-for 'script') blocks
+  // new Function() outright: "Refused to evaluate a string as JavaScript".
+  // Fall back to injecting a <script> element, which is NOT gated the same way
+  // when you set .textContent rather than .src.
+  function runFlavorCode(code){
+    try {
+      (new Function(code))();
+      return;
+    } catch(e) {
+      var msg = String((e && e.message) || e);
+      if (!/Trusted Type|unsafe-eval|Content Security Policy|call to eval|EvalError/i.test(msg)) throw e;
+    }
+    // Flavor code uses top-level `return` to undo itself. That is legal inside
+    // new Function but ILLEGAL at the top level of a script, so wrap it.
+    var wrapped = '(function(){\n' + code + '\n})();';
+    var payload = wrapped;
+    try {
+      if (window.trustedTypes && window.trustedTypes.createPolicy) {
+        var pol = window.trustedTypes.createPolicy(
+          'flavor_run_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+          { createScript: function(x){ return x; } });
+        payload = pol.createScript(wrapped);
+      }
+    } catch(e) { /* policy refused: try the raw string, some sites still allow it */ }
+    var el = document.createElement('script');
+    el.textContent = payload;
+    (document.head || document.documentElement).appendChild(el);
+    el.parentNode && el.parentNode.removeChild(el);
+  }
+
   function runCustomFlavor(cf){
     try {
-      (new Function(cf.code))();
+      runFlavorCode(cf.code);
     } catch(e) {
       alert('Error running "' + cf.name + '": ' + e.message);
       return;
@@ -1481,5 +1511,6 @@ function flavorHub(){
   armSuggestions();
 
   window.__flavorHub__ = { togglePanel: togglePanel, flavors: FLAVORS,
-                           suggestNow: maybeSuggest, analyzeRegions: analyzeRegions };
+                           suggestNow: maybeSuggest, analyzeRegions: analyzeRegions,
+                           runFlavorCode: runFlavorCode };
 }

@@ -96,9 +96,16 @@ Set on `html,ytd-app`. This is why the masthead gradient kept working while the 
 
 ## Hard constraints (violating these breaks the page)
 
-- **Trusted Types.** YouTube sends `require-trusted-types-for 'script'`. `el.innerHTML = ...`
-  and `script.src = "<string>"` THROW. Use `element.replaceChildren()` to clear, and
-  `script.textContent` to inject. Emit no `innerHTML` in generated code.
+- **Trusted Types.** YouTube sends `require-trusted-types-for 'script'`. These all THROW here:
+  `el.innerHTML = ...`, `outerHTML`, `insertAdjacentHTML`, `document.write`,
+  `script.src = "<string>"`, **`eval(...)` and `new Function(...)`**.
+  (`new Function` is what broke the first generated flavor at runtime:
+  *"Refused to evaluate a string as JavaScript because this document requires a
+  'Trusted Type' assignment"*.) Use `element.replaceChildren()` to clear and a
+  `<style>`/`<script>` element's **`.textContent`** to inject — that is not gated.
+- **Don't force `display`** on an element you are only restyling. Forcing `display:block`
+  on a flex/aspect-ratio box collapses its height, and with `overflow:hidden` the content is
+  clipped away — this is what made every thumbnail vanish once.
 - **Never hide `#columns`.** It contains both `#secondary` AND the player. Hiding it hides the
   video. Target the specific siblings: `#secondary`, `#comments`, `#below`.
 - **No CSS fake-fullscreen.** Forcing `position:fixed;width:100vw;height:100vh` on the player

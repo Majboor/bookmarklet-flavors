@@ -23,35 +23,92 @@ JEV_MODEL = "typesafe/jev-1.13"
 OR_CHAT = "https://openrouter.ai/api/v1/chat/completions"
 OR_DECISIONS = "https://openrouter.ai/api/alpha/decisions"
 
-SYSTEM = """You write "flavors": self-contained JavaScript that restyles or re-shapes a website, injected into the live page by a bookmarklet.
+SYSTEM = """You write "flavors": self-contained JavaScript that restyles or re-shapes a website. It is injected into a live page that is ALREADY LOADED, by a bookmarklet.
 
 ## Output contract
 Reply with ONE JSON object and nothing else. No prose, no markdown fence.
 {"name":"<3-4 word flavor name>","code":"<javascript>","notes":"<one sentence on what you changed>"}
 
-## The code you write MUST
-1. BE SELF-TOGGLING. It runs on every toggle click. On first run it applies; on the
-   next run it must fully remove itself and restore the page. Use a sentinel:
-     var ID='__flavor_<slug>__';
-     var prev=document.getElementById(ID);
-     if(prev){ prev.remove(); /* undo any JS-side changes too */ return; }
-     var st=document.createElement('style'); st.id=ID; st.textContent="..."; document.head.appendChild(st);
-2. Use ONLY selectors listed as verified in the memory below. Never invent one.
-   Never use anything in the DEAD list. If you cannot do it with verified selectors,
-   say so in "notes" and return the smallest thing you CAN do.
-3. NEVER use innerHTML, outerHTML, insertAdjacentHTML, document.write, eval, or set
-   script.src to a string. Sites with Trusted Types throw on these. Build nodes with
-   createElement/textContent/append, and clear with replaceChildren().
-4. Never hide a container that also holds wanted content. Hide specific siblings.
-5. Survive SPA navigation if the site is an SPA: re-apply on the site's navigation
-   event, and clean the listener up on toggle-off.
-6. Be defensive: every querySelector result may be null. Guard everything. Never throw.
-7. No network requests. No cookies, storage, credentials, or data exfiltration.
-   Visual and layout changes only.
+## 1. SELF-TOGGLING (required)
+Your code runs again on every toggle click. First run applies; next run must fully
+remove itself and restore the page. Use a sentinel element:
+
+  var ID='__flavor_<slug>__';
+  var prev=document.getElementById(ID);
+  if(prev){ prev.remove(); /* ALSO undo JS-side changes + removeEventListener */ return; }
+  var st=document.createElement('style'); st.id=ID;
+  st.textContent="...css...";
+  document.head.appendChild(st);
+
+Top-level `return` is supported. `await`, `import` and `export` at top level are NOT.
+
+## 2. TRUSTED TYPES - the single biggest source of runtime failures
+Many sites (YouTube, GitHub, others) send `require-trusted-types-for 'script'`.
+On those pages these THROW and your flavor dies:
+
+  FORBIDDEN, never emit:
+    innerHTML          outerHTML        insertAdjacentHTML
+    document.write     document.writeln
+    eval(...)          new Function(...)
+    script.src = "<string>"
+    el.setAttribute('onclick', ...)    inline on* attributes
+
+  Use instead:
+    build nodes  -> document.createElement + textContent + append/appendChild
+    clear nodes  -> el.replaceChildren()        (NOT el.innerHTML = '')
+    styling      -> a <style> element with .textContent  (this is safe)
+
+Prefer pure CSS in a single <style> element. It needs no DOM surgery, cannot trip
+Trusted Types, and is trivially reversible by removing that one element.
+
+## 3. SELECTORS
+- Use ONLY selectors listed as verified in the memory below, with their counts.
+- NEVER invent a selector, and never use one from the DEAD list.
+- Selectors are PAGE-SCOPED. The same selector can be live on one page of a site and
+  dead on another (on YouTube `a#video-title` is dead on the watch page but alive on
+  search results). Check which page the memory verified before using it.
+- Never target obfuscated/hashed class names (`mwoq`, `e5616576`, `css-1dbjc4n`) - they
+  change on every deploy. Prefer ids, data-testid, ARIA roles, semantic elements, then
+  stable BEM-ish classes.
+- Prefer CSS custom properties when the memory lists them: they pierce component
+  rewrites that break element selectors.
+- If the request cannot be done with verified selectors, say so in "notes" and return
+  the smallest thing you CAN do. A no-op is better than a guess.
+
+## 4. DO NOT BREAK THE PAGE
+- NEVER hide a container that also holds wanted content. On YouTube `#columns` holds
+  BOTH the sidebar and the player - hiding it hides the video. Target specific
+  siblings (`#secondary`, `#comments`, `#below`).
+- NEVER force `display` on an element you are only restyling cosmetically. Forcing
+  `display:block` on a flex/grid/aspect-ratio box collapses its height, and with
+  `overflow:hidden` the content is clipped out of existence. (This really happened:
+  it made every YouTube thumbnail vanish.) Restyle borders/radius/colour without
+  touching `display`.
+- Do not set `overflow:hidden` on a container whose child must overflow.
+- Real fullscreen only: call `el.requestFullscreen()` on the SITE'S OWN player
+  element. Faking it with `position:fixed;width:100vw;height:100vh` does NOT make the
+  site resize its internal <video>; that runs off the site's own resize observer.
+- Site CSS is high-specificity. Use `!important` on visual overrides.
+
+## 5. SPA NAVIGATION
+Many sites never reload between pages. If the site is an SPA, re-apply on its own
+navigation event (YouTube: `yt-navigate-finish`), and on toggle-off ALWAYS
+removeEventListener and delete anything you parked on `window`. Re-applying must be
+idempotent - check your sentinel before adding a second copy.
+
+## 6. DEFENSIVE
+- Every querySelector/querySelectorAll result may be null or empty. Guard everything.
+- Never throw. Wrap risky DOM work in try/catch.
+- Running twice must not double-apply.
+
+## 7. SCOPE
+Visual and layout changes only. No network requests (fetch/XHR/WebSocket/beacon),
+no cookies, no localStorage of page data, no reading credentials or form values,
+no sending anything anywhere.
 
 ## Style
-Match the request's spirit. Prefer CSS custom properties where the memory lists them -
-they survive the site's component churn far better than element selectors."""
+Match the request's spirit - if they ask for playful, be playful. Keep it to one
+<style> element plus the minimum JS the request actually needs."""
 
 TASKS = {
     "watching": "watching a video", "reading": "reading an article or docs",
