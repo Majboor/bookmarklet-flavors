@@ -31,3 +31,14 @@ Updated 2026-09-19. Status: ✅ done · 🟡 coded, not verified/deployed · ⬜
 
 | **B7** | CORS preflight 520 | ✅ | `do_OPTIONS` returned `204` **with a body** (`Content-Length: 2`). Cloudflare rejects that as malformed with a 520, failing the preflight, which the page reports only as "Failed to fetch". Now `204` + `Content-Length: 0`. All three endpoints preflight 204. |
 | **B8** | Unhelpful generator errors | ✅ | A 404 HTML page parsed as JSON surfaced as Safari's "The string did not match the expected pattern". Client now reads as text, detects a 404, and says the API isn't deployed. |
+
+| **A9** | Memory for more platforms | 🟡 | **Verified + shipped:** `news.ycombinator.com` (14 elements), `stackoverflow.com` (20), `github.com` (11, README unverified). HN flavor generated and verified live: dark bg, titles 13.3→20px, all 30 stories intact, clean toggle-off. **Blocked:** `x.com` and `linkedin.com` need a logged-in session — see below. |
+| **A10** | x.com / linkedin.com memory | ⬜ | Signed out, **x.com returns a blank document headless** and renders only intermittently in headed Chrome — every `data-testid` measured 0 on the run I scored, though an earlier run saw `role=article` ×9. LinkedIn redirects `/feed/` to a login wall and serves guest markup with obfuscated hash classes (`e5616576`) on public pages. Both serve a *different app* to guests, so guest selectors would be confidently wrong for the logged-in UI you actually use. Needs Chrome quit so Playwright can use the real profile directly. |
+
+## What the hanzi-browse repo actually contained
+
+Searched all **412 files**, not just the skills. Total selector haul: **one** —
+`[data-testid="tweetTextarea_0"]` in the x.com entry of `server/dist/agent/domain-skills.json`.
+The 21 domain entries there are behavioural guidance ("click the post title", "comments are
+nested", "Draft.js ignores programmatic input"), which is useful for knowing *what* to look for
+but cannot seed a memory file. It did confirm that **X's durable handle is `data-testid`**.

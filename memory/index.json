@@ -12,6 +12,30 @@
       "verified": "2026-09-19",
       "coverage": "watch + search results verified; home feed needs a logged-in session",
       "existing_flavor": "fancy_yt"
+    },
+    {
+      "domain": "news.ycombinator.com",
+      "aliases": [],
+      "file": "news.ycombinator.com.md",
+      "elements": 14,
+      "verified": "2026-09-19",
+      "coverage": "front page verified, signed out"
+    },
+    {
+      "domain": "stackoverflow.com",
+      "aliases": [],
+      "file": "stackoverflow.com.md",
+      "elements": 20,
+      "verified": "2026-09-19",
+      "coverage": "question page verified, signed out"
+    },
+    {
+      "domain": "github.com",
+      "aliases": [],
+      "file": "github.com.md",
+      "elements": 11,
+      "verified": "2026-09-19",
+      "coverage": "repository page verified, signed out; README selectors unverified"
     }
   ]
 }

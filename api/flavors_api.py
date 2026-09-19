@@ -310,7 +310,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.rstrip("/") in ("/api/health", "/health"):
-            doms = sorted(f[:-3] for f in os.listdir(MEMORY_DIR)) if os.path.isdir(MEMORY_DIR) else []
+            doms = sorted(f[:-3] for f in os.listdir(MEMORY_DIR) if f.endswith(".md")) if os.path.isdir(MEMORY_DIR) else []
             return self._send(200, {"ok": True, "key": bool(KEY), "memory": doms})
         self._send(404, {"error": "Not found"})
 
