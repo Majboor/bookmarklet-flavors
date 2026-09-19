@@ -467,8 +467,12 @@ function flavorHub(){
       delete (prefs.suggestMuted || {})[siteKey()];   // clear any mute for this site
       savePrefs(prefs);
       suggestState.shown = false;
+      suggestState.count = 0;
+      suggestState.said = {};
+      suggestState.dismisses = 0;
+      suggestState.pauseUntil = 0;
       if (panelOpen) togglePanel();
-      setTimeout(maybeSuggest, 350);
+      setTimeout(function(){ maybeSuggest({ explicit: true }); }, 350);
     });
     var addBtn = smallBtn('+ Add', function(){ panelView = 'add'; renderPanel(); });
     var exportBtn = smallBtn('Export', function(){ doExport(exportBtn); });
@@ -1099,9 +1103,12 @@ function flavorHub(){
   // ===================================================================
 
   var SUGGEST_URL = API_BASE + '/api/suggest';
-  var SUGGEST_DELAY = 9000;      // let the page settle, and the user actually look at it
+  var SUGGEST_DELAY = 4000;       // first look, once the page has settled
+  var SUGGEST_INTERVAL = 11000;   // keep looking, but only speak when there is something new
+  var SUGGEST_MAX_PER_PAGE = 5;   // then stop, so it can never nag forever
   var SUGGEST_COOLDOWN = 6 * 60 * 60 * 1000;   // 6h per domain after a dismiss
-  var suggestState = { shown: false, bubble: null, timer: null };
+  var suggestState = { shown: false, bubble: null, timer: null, loop: null,
+                       said: {}, count: 0, lastUrl: '', dismisses: 0, pauseUntil: 0 };
 
   // Class names are frequently obfuscated ("mwoq", "ytLockupViewModelHost"), so a
   // label scraped from the DOM is often unusable in a sentence. We send evidence
@@ -1159,7 +1166,9 @@ function flavorHub(){
   }
 
   function suggestAllowed(){
-    if (suggestState.shown || panelOpen) return false;
+    if (suggestState.bubble || panelOpen) return false;
+    if (suggestState.count >= SUGGEST_MAX_PER_PAGE) return false;
+    if (suggestState.pauseUntil && Date.now() < suggestState.pauseUntil) return false;
     var mem = prefs.suggestMuted || {};
     var until = mem[siteKey()];
     if (until && Date.now() < until) return false;
@@ -1221,10 +1230,35 @@ function flavorHub(){
     setTimeout(function(){ if (b.parentNode) b.parentNode.removeChild(b); }, 300);
   }
 
+  // An explicit Tip press must always answer. Silently doing nothing is
+  // indistinguishable from being broken - that is how this looked.
+  function showNotice(text){
+    if (!mascotEl || suggestState.bubble) return;
+    var b = document.createElement('div');
+    b.id = '__flavor_bubble__';
+    b.style.cssText = 'position:fixed;z-index:2147483646;max-width:240px;background:linear-gradient(150deg,#2a1b45,#241638);' +
+      'color:#caa6f5;border:1px solid rgba(200,109,252,.35);border-radius:14px;padding:10px 12px;' +
+      'font-family:Quicksand,-apple-system,sans-serif;font-size:12px;line-height:1.45;' +
+      'box-shadow:0 10px 30px rgba(0,0,0,.45);opacity:0;transform:translateY(6px);transition:opacity .25s,transform .25s;';
+    b.textContent = text;
+    document.body.appendChild(b);
+    suggestState.bubble = b;
+    positionBubble(b);
+    void b.offsetWidth;
+    b.style.opacity = '1'; b.style.transform = 'translateY(0)';
+    suggestState.timer = setTimeout(hideBubble, 4200);
+  }
+
   function showSuggestion(res){
     if (!mascotEl || suggestState.bubble) return;
     suggestState.shown = true;
+    suggestState.count++;
+    // Mark only the target we actually named. Marking every candidate meant one
+    // tip consumed them all and the next cycle had nothing left to offer.
+    var named = (res.targets || [])[0];
+    if (named && named.kind) suggestState.said[named.kind] = true;
     var b = buildBubble(res.message, function(){
+      suggestState.dismisses = 0;
       hideBubble();
       // hand the suggestion straight to the generator as a prefilled prompt
       aiState.pendingPrompt = res.prompt;
@@ -1235,7 +1269,18 @@ function flavorHub(){
       if (!panelOpen) togglePanel(); else renderPanel();
     }, function(){
       hideBubble();
-      muteSuggestions();
+      // "Not now" means not THIS one - not six hours of silence. Remember the
+      // kind so we do not repeat it, pause briefly, and only really back off if
+      // they keep saying no.
+      var dn = (res.targets || [])[0];
+      if (dn && dn.kind) suggestState.said[dn.kind] = true;
+      suggestState.dismisses = (suggestState.dismisses || 0) + 1;
+      if (suggestState.dismisses >= 3) {
+        muteSuggestions();
+        setTimeout(function(){ showNotice("Alright — I'll stop suggesting things here."); }, 350);
+      } else {
+        suggestState.pauseUntil = Date.now() + SUGGEST_INTERVAL * 2;
+      }
     });
     document.body.appendChild(b);
     positionBubble(b);
@@ -1245,28 +1290,82 @@ function flavorHub(){
     suggestState.bubble = b;
     bounceMascot();
     // never linger - if it is ignored, it goes away quietly
-    suggestState.timer = setTimeout(function(){ hideBubble(); muteSuggestions(30 * 60 * 1000); }, 14000);
+    suggestState.timer = setTimeout(function(){
+      hideBubble();
+      suggestState.pauseUntil = Date.now() + SUGGEST_INTERVAL * 2;
+    }, 14000);
   }
 
-  function maybeSuggest(){
-    if (!suggestAllowed()) return;
+  function maybeSuggest(opts){
+    opts = opts || {};
+    var explicit = !!opts.explicit;
+    function say(msg){ if (explicit) showNotice(msg); }
+
+    if (suggestState.bubble) return;
+    if (!explicit && !suggestAllowed()) return;
+    if (explicit && panelOpen) return;
+
     var regions = analyzeRegions();
-    if (regions.length < 2) return;
+    if (regions.length < 2) {
+      say("Nothing much to work with on this page — I can only see "
+          + regions.length + " distinct region" + (regions.length === 1 ? "" : "s") + ".");
+      return;
+    }
     fetch(SUGGEST_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         url: location.href, title: document.title, regions: regions,
+        exclude: Object.keys(suggestState.said),
         headings: [].slice.call(document.querySelectorAll('h1,h2')).slice(0, 5)
           .map(function(h){ return (h.innerText || '').trim().slice(0, 80); }).filter(Boolean)
       })
     })
-      .then(function(r){ return r.json(); })
-      .then(function(j){ if (j && j.suggest && j.message) showSuggestion(j); })
-      .catch(function(){ /* offline or CSP-blocked: stay silent, never nag */ });
+      .then(function(r){ return r.text(); })
+      .then(function(t){
+        var j = null; try { j = JSON.parse(t); } catch(e){}
+        if (!j) { say('The suggestion service returned something unreadable.'); return; }
+        if (j.error) { say('Could not get a suggestion: ' + String(j.error).slice(0, 70)); return; }
+        if (!j.suggest || !j.message) {
+          var w = j.why || {};
+          say('Nothing worth suggesting here — this page looks calm enough'
+              + (w.clutter != null ? ' (clutter ' + Number(w.clutter).toFixed(2) + ')' : '') + '.');
+          return;
+        }
+        // ACCURACY GATE: never propose removing something that is not actually
+        // on the page right now. A confident sentence about a missing element is
+        // worse than saying nothing.
+        var live = (j.targets || []).filter(function(tg){
+          try { return tg.selector && document.querySelectorAll(tg.selector).length > 0; }
+          catch(e){ return false; }
+        });
+        if (!live.length) { say('Found something, but it is no longer on screen — skipping.'); return; }
+        j.targets = live;
+        showSuggestion(j);
+      })
+      .catch(function(e){
+        // offline or CSP-blocked: silent on the timer, honest when asked
+        say('Cannot reach the suggestion service from this site (' + String(e.message).slice(0, 50) + ').');
+      });
   }
 
   function armSuggestions(){
+    if (suggestState.loop) clearInterval(suggestState.loop);
+    // Seed it NOW. Leaving it empty meant the first interval tick always looked
+    // like a navigation and wiped whatever the initial suggestion had recorded.
+    suggestState.lastUrl = location.host + location.pathname;
     setTimeout(maybeSuggest, SUGGEST_DELAY);
+    suggestState.loop = setInterval(function(){
+      // an SPA navigation is a new page: reset what we have already said
+      // Compare host+path only. YouTube rewrites query params while a video
+      // plays, so comparing full href made every tick look like a new page and
+      // silently wiped the "already suggested this" memory.
+      var here = location.host + location.pathname;
+      if (here !== suggestState.lastUrl) {
+        suggestState.lastUrl = here;
+        suggestState.said = {}; suggestState.count = 0; suggestState.dismisses = 0;
+      }
+      maybeSuggest();
+    }, SUGGEST_INTERVAL);
   }
 
   // ===================================================================
@@ -1862,10 +1961,12 @@ function flavorHub(){
   armSuggestions();
 
   window.__flavorHub__ = { togglePanel: togglePanel, flavors: FLAVORS,
-                           suggestNow: maybeSuggest, analyzeRegions: analyzeRegions,
+                           analyzeRegions: analyzeRegions,
                            runFlavorCode: runFlavorCode,
                            generateWithRepair: generateWithRepair,
                            applyAndVerify: applyAndVerify,
                            extractSelectors: extractSelectors,
-                           livePageReport: livePageReport };
+                           livePageReport: livePageReport,
+                           suggestState: suggestState, prefs: prefs,
+                           suggestNow: maybeSuggest };
 }

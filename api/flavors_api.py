@@ -316,12 +316,17 @@ def handle_suggest(body):
     task_conf = ((a.get("task") or {}).get("probabilities") or {}).get(task, 0)
     clutter = (a.get("clutter") or {}).get("score", 0)
 
+    # Kinds the client has already suggested on this page - offer something else
+    # rather than repeating the same line every loop.
+    exclude = set(x for x in (body.get("exclude") or []) if isinstance(x, str))
     picks, seen = [], set()
     ranked = []
     for i, c in enumerate(regions, 1):
         k = (a.get("k%d" % i) or {}).get("choice")
         kc = ((a.get("k%d" % i) or {}).get("probabilities") or {}).get(k, 0)
         p = (a.get("d%d" % i) or {}).get("noul", 0)
+        if k in exclude:
+            continue
         if p > 0.7 and k in REMOVABLE and kc >= 0.5 and KIND_LABEL.get(k):
             ranked.append({"selector": c.get("selector"), "kind": k, "label": KIND_LABEL[k], "p": p})
     ranked.sort(key=lambda x: -x["p"])
@@ -332,7 +337,8 @@ def handle_suggest(body):
 
     if not task or task_conf < 0.5 or clutter < 0.8 or not picks:
         return 200, {"suggest": False, "why": {"task": task, "taskConf": task_conf,
-                                               "clutter": clutter, "candidates": len(picks)}}
+                                               "clutter": clutter, "candidates": len(picks),
+                                               "excluded": sorted(exclude)}}
     top = picks[0]
     second = picks[1] if len(picks) > 1 else None
     tt = TASKS.get(task, "using this page")
