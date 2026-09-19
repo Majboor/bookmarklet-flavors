@@ -54,3 +54,11 @@ but cannot seed a memory file. It did confirm that **X's durable handle is `data
 
 | **B14** | Chat refine replied but changed nothing | ✅ | `renderChatView`'s Send called `saveGenerated` — storing the new code but **never running it**. With the flavor already on, the old code stayed applied, so the model's reply updated while the page sat unchanged. Send now undoes the previous version first (otherwise the new code lands on top of the old styles, or worse reuses the same sentinel id and *removes* it), then runs the full verify/repair loop and reports the verdict. Verified live: refine hid sidebar **and** comments, 7 style changes, 0 repairs. |
 | **B15** | Verifier false-negative | ✅ | The selector extractor rejected any candidate containing a quote or newline — but a rule head sliced out of JS carries the string delimiter (`'#secondary`, `` `\n#secondary ``), so real selectors were silently dropped. The verifier then saw no targets, reported "matched nothing" on a flavor that visibly worked, and burned 3 repair rounds fixing nothing. Now strips delimiters, collapses newlines (legal in descendant selectors) and lets `querySelector` be the gate. All extractor cases pass; the same flavor now reports `worked=True, repairs=0`. |
+
+| **B16** | Static site dying repeatedly | ✅ | **Port collision, not connection handling.** `serve.py` sat on **8899** — the Inverex/Deye solar dongle port — so `poller_solar.py` sprayed binary Modbus-ish frames at the web server thousands of times a second. Every frame logged: ~170,000 journald lines/min, 12 GB of `/var/log`, root disk at 98%, accept queue starved. Moved to **8898**, tunnel repointed, 8899 returned to the solar poller. Also stopped per-request journald logging, capped journald at 500 MB, vacuumed 2.2 GB. Log volume 170k/min → **5/min**, Recv-Q → 0, 24 concurrent requests all 200. |
+
+## Not flavors, but will bite
+
+- **T3500 root disk 96%** (4.3 GB free). `/opt/homelab-llama-bench` is **36 GB** on its own.
+- **T3500 `tank` pool DEGRADED** — single disk, no redundancy, 22 data errors, holding 163 GB of
+  `drive-backup`. A backup living on a dying disk. Open since the original handover.
