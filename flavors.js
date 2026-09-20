@@ -265,6 +265,17 @@ function flavorHub(){
   /* ================= mascot + panel ================= */
   var mascotEl, panelEl, panelOpen = false, mascotHovering = false;
   var PANEL_W = 288;
+  // Panel + text stayed at a fixed desktop size on every screen. On a real
+  // phone this is both genuinely small (unused width - the panel is well
+  // inside the viewport, so it was never being clipped, just never sized up)
+  // AND likely the cause of a perceived "typing delay": Safari auto-zooms
+  // the whole page when you focus a text input under 16px, and that zoom
+  // animation (~300ms, visibly shifts the layout) looks exactly like a lag
+  // before your typing appears. Every prompt textarea in this file was
+  // 11-12px. Fixed together since they're the same root cause, not two bugs.
+  function isSmallViewport(){ return window.innerWidth < 480; }
+  function panelWidth(){ return isSmallViewport() ? Math.min(window.innerWidth - 24, 380) : PANEL_W; }
+  function mobileFontPx(desktopPx){ return isSmallViewport() ? 16 : desktopPx; }
   var searchQuery = '';
   var panelView = 'main';
   var MASCOT_REST = '-40px', MASCOT_OUT = '-4px', MASCOT_FULL = '8px';
@@ -499,7 +510,7 @@ function flavorHub(){
     codeLabel.style.cssText = 'font-size:11px;color:#caa6f5;margin:0 0 4px;';
     var codeArea = document.createElement('textarea');
     codeArea.placeholder = 'paste a self-toggling script...';
-    codeArea.style.cssText = 'width:100%;box-sizing:border-box;min-height:90px;padding:8px;border-radius:8px;border:1px solid #3a2a5c;background:#2a1b45;color:#f5e9ff;font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical;';
+    codeArea.style.cssText = 'width:100%;box-sizing:border-box;min-height:90px;padding:8px;border-radius:8px;border:1px solid #3a2a5c;background:#2a1b45;color:#f5e9ff;font-family:ui-monospace,Menlo,monospace;font-size:' + mobileFontPx(11) + 'px;resize:vertical;';
 
     panelEl.appendChild(nameField.wrap);
     panelEl.appendChild(siteField.wrap);
@@ -546,7 +557,7 @@ function flavorHub(){
     panelEl.appendChild(hint);
 
     var area = document.createElement('textarea');
-    area.style.cssText = 'width:100%;box-sizing:border-box;min-height:90px;padding:8px;border-radius:8px;border:1px solid #3a2a5c;background:#2a1b45;color:#f5e9ff;font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical;';
+    area.style.cssText = 'width:100%;box-sizing:border-box;min-height:90px;padding:8px;border-radius:8px;border:1px solid #3a2a5c;background:#2a1b45;color:#f5e9ff;font-family:ui-monospace,Menlo,monospace;font-size:' + mobileFontPx(11) + 'px;resize:vertical;';
     panelEl.appendChild(area);
 
     var btnRow = document.createElement('div');
@@ -1103,7 +1114,7 @@ function flavorHub(){
     var ta = document.createElement('textarea');
     if (aiState.pendingPrompt) { ta.value = aiState.pendingPrompt; aiState.pendingPrompt = null; }
     ta.placeholder = 'e.g. show me emails in a tiktok format - as I scroll, show me a new email';
-    ta.style.cssText = 'width:100%;box-sizing:border-box;height:66px;background:#2a1b45;color:#f5e9ff;border:1px solid #3a2a5c;border-radius:10px;padding:8px;font-size:12px;font-family:inherit;resize:vertical;';
+    ta.style.cssText = 'width:100%;box-sizing:border-box;height:66px;background:#2a1b45;color:#f5e9ff;border:1px solid #3a2a5c;border-radius:10px;padding:8px;font-size:' + mobileFontPx(12) + 'px;font-family:inherit;resize:vertical;';
     panelEl.appendChild(ta);
 
     if (aiState.picked.length) {
@@ -1225,7 +1236,7 @@ function flavorHub(){
 
     var ta = document.createElement('textarea');
     ta.placeholder = 'Change something… e.g. make the cards rounder';
-    ta.style.cssText = 'width:100%;box-sizing:border-box;height:52px;background:#2a1b45;color:#f5e9ff;border:1px solid #3a2a5c;border-radius:10px;padding:8px;font-size:12px;font-family:inherit;resize:vertical;';
+    ta.style.cssText = 'width:100%;box-sizing:border-box;height:52px;background:#2a1b45;color:#f5e9ff;border:1px solid #3a2a5c;border-radius:10px;padding:8px;font-size:' + mobileFontPx(12) + 'px;font-family:inherit;resize:vertical;';
     panelEl.appendChild(ta);
 
     if (aiState.picked.length) {
@@ -2112,7 +2123,21 @@ function flavorHub(){
       }
     }
 
-    var customs = customFlavorsForSite().filter(function(f){ return matchesSearch(f.name); });
+    var allCustoms = customFlavorsForSite().filter(function(f){ return matchesSearch(f.name); });
+    // Automations (recorded workflows the AI wrote to repeat/speed up) were
+    // rendered mixed into the same flat "Custom" list as hand-added scripts
+    // and AI reskins - no way to tell them apart at a glance. Split them into
+    // their own labeled section; same rows, same toggle, just grouped.
+    var automations = allCustoms.filter(function(f){ return f.automation; });
+    var customs = allCustoms.filter(function(f){ return !f.automation; });
+    if (automations.length) {
+      shownAny = true;
+      var autoLabel = document.createElement('div');
+      autoLabel.textContent = '⚡ Automations';
+      autoLabel.style.cssText = 'font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#caa6f5;margin-top:14px;margin-bottom:2px;';
+      panelEl.appendChild(autoLabel);
+      automations.forEach(function(cf){ panelEl.appendChild(buildCustomToggleRow(cf)); });
+    }
     if (customs.length) {
       shownAny = true;
       var customLabel = document.createElement('div');
@@ -2169,7 +2194,9 @@ function flavorHub(){
 
   function positionPanelNearMascot(){
     var r = mascotEl.getBoundingClientRect();
-    var left = Math.min(Math.max(8, r.left + r.width / 2 - PANEL_W / 2), window.innerWidth - PANEL_W - 8);
+    var w = panelWidth();
+    panelEl.style.width = w + 'px';
+    var left = Math.min(Math.max(8, r.left + r.width / 2 - w / 2), window.innerWidth - w - 8);
     var top = r.bottom + 10;
     if (top + 260 > window.innerHeight) top = Math.max(8, r.top - 260);
     panelEl.style.left = left + 'px';
@@ -2369,7 +2396,7 @@ function flavorHub(){
     panelEl = document.createElement('div');
     panelEl.id = '__flavor_panel__';
     panelEl.dir = 'ltr';
-    panelEl.style.cssText = 'box-sizing:border-box;position:fixed;top:-500px;left:0;width:' + PANEL_W + 'px;max-height:70vh;overflow:auto;background:#1c1230;border:1px solid #3a2a5c;border-radius:16px;box-shadow:0 20px 50px rgba(0,0,0,.5);z-index:2147483646;padding:16px;font-family:Quicksand,sans-serif;color:#f5e9ff;opacity:0;pointer-events:none;transition:opacity .2s ease;';
+    panelEl.style.cssText = 'box-sizing:border-box;position:fixed;top:-500px;left:0;width:' + panelWidth() + 'px;max-height:70vh;overflow:auto;background:#1c1230;border:1px solid #3a2a5c;border-radius:16px;box-shadow:0 20px 50px rgba(0,0,0,.5);z-index:2147483646;padding:16px;font-family:Quicksand,sans-serif;color:#f5e9ff;opacity:0;pointer-events:none;transition:opacity .2s ease;';
     document.body.appendChild(panelEl);
 
     document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && panelOpen) togglePanel(); });
