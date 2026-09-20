@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Flavors",
+  "version": "1.0.0",
+  "description": "Site reskins, features and workflow automation - the mascot that lives on every page instead of a bookmarklet you have to re-click after every navigation.",
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "exclude_matches": ["*://*.google.com/recaptcha/*"],
+      "run_at": "document_idle",
+      "all_frames": false,
+      "js": ["flavors.js", "content.js"]
+    }
+  ]
+}

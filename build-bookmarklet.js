@@ -67,3 +67,13 @@ if (!re.test(html)) throw new Error('bookmarkletCode assignment not found in ins
 html = html.replace(re, 'var bookmarkletCode = ' + JSON.stringify(bookmarklet) + ';');
 fs.writeFileSync(HTML, html);
 console.log('install page updated:', HTML);
+
+// The extension content script loads flavors.js as a plain file (not the
+// embedded/eval'd copy above) - keep extension/flavors.js byte-identical to
+// the source so it can't silently drift, the same lesson B9 already taught
+// about the bookmarklet's own frozen embedded copy.
+const EXT_SRC = path.join(__dirname, 'extension', 'flavors.js');
+if (fs.existsSync(path.dirname(EXT_SRC))) {
+  fs.writeFileSync(EXT_SRC, src);
+  console.log('extension/flavors.js synced:', src.length, 'bytes');
+}
